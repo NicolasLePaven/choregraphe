@@ -1,0 +1,89 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id             String         @id @default(cuid())
+  email          String         @unique
+  name           String
+  passwordHash   String
+  createdAt      DateTime       @default(now())
+  choreographies Choreography[] @relation("OwnedChoreographies")
+  memberships    Membership[]
+}
+
+model Choreography {
+  id          String       @id @default(cuid())
+  ownerId     String
+  owner       User         @relation("OwnedChoreographies", fields: [ownerId], references: [id], onDelete: Cascade)
+  title       String
+  stageShape  String
+  stageWidth  Float
+  stageDepth  Float
+  tempoTpm    Int
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  dancers     Dancer[]
+  formations  Formation[]
+  memberships Membership[]
+
+  @@index([ownerId])
+}
+
+model Membership {
+  id             String       @id @default(cuid())
+  choreographyId String
+  choreography   Choreography @relation(fields: [choreographyId], references: [id], onDelete: Cascade)
+  userId         String?
+  user           User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  email          String
+  role           String
+  createdAt      DateTime     @default(now())
+
+  @@unique([choreographyId, email])
+  @@index([userId])
+  @@index([email])
+}
+
+model Dancer {
+  id             String       @id @default(cuid())
+  choreographyId String
+  choreography   Choreography @relation(fields: [choreographyId], references: [id], onDelete: Cascade)
+  name           String
+  color          String
+  order          Int
+  positions      Position[]
+
+  @@index([choreographyId])
+}
+
+model Formation {
+  id              String       @id @default(cuid())
+  choreographyId  String
+  choreography    Choreography @relation(fields: [choreographyId], references: [id], onDelete: Cascade)
+  order           Int
+  label           String
+  holdBeats       Int
+  transitionBeats Int
+  positions       Position[]
+
+  @@index([choreographyId])
+}
+
+model Position {
+  id          String    @id @default(cuid())
+  formationId String
+  formation   Formation @relation(fields: [formationId], references: [id], onDelete: Cascade)
+  dancerId    String
+  dancer      Dancer    @relation(fields: [dancerId], references: [id], onDelete: Cascade)
+  x           Float
+  y           Float
+  curve       Float     @default(0)
+
+  @@unique([formationId, dancerId])
+}
