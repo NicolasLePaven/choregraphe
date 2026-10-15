@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { DeleteChoreographyButton } from "@/components/DeleteChoreographyButton";
+import { DuplicateChoreographyButton } from "@/components/DuplicateChoreographyButton";
 import { getSession } from "@/lib/auth";
 import { listChoreographies } from "@/lib/access";
 import { ROLE_LABELS, SHAPE_LABELS } from "@/lib/domain";
@@ -42,11 +43,14 @@ export default async function ChoreographiesPage() {
                   {`${SHAPE_LABELS[item.stageShape]} · ${item.dancerCount} danseur${item.dancerCount > 1 ? "s" : ""} · ${item.tempoTpm} TPM`}
                 </p>
                 <p className="mt-1 text-xs text-muted">Modifiée le {formatter.format(new Date(item.updatedAt))}</p>
-                <div className="mt-4 flex items-center justify-between">
+                <div className="mt-4 flex items-center justify-between gap-3">
                   <Link href={`/choregraphies/${item.id}`} className="text-sm font-medium text-ink hover:underline">
                     Ouvrir
                   </Link>
-                  {item.role === "owner" ? <DeleteChoreographyButton id={item.id} /> : null}
+                  <div className="flex items-center gap-3">
+                    <DuplicateChoreographyButton id={item.id} />
+                    {item.role === "owner" ? <DeleteChoreographyButton id={item.id} /> : null}
+                  </div>
                 </div>
               </li>
             ))}

@@ -2,13 +2,7 @@
 
 import { useRef } from "react";
 import { curveFromPointer, initials, pointOnCurve, type Dancer } from "@/lib/domain";
-import {
-  clampToValid,
-  resolvedStage,
-  WING_WIDTH,
-  type Point,
-  type Stage,
-} from "@/lib/geometry";
+import { resolvedStage, WING_WIDTH, type Point, type Stage } from "@/lib/geometry";
 
 export type TravelPath = {
   dancerId: string;
@@ -23,16 +17,29 @@ type Props = {
   stage: Stage;
   dancers: Dancer[];
   positions: Map<string, Point>;
-  selectedId: string | null;
+  selectedIds: string[];
   editable: boolean;
   travels?: TravelPath[];
-  curveIds?: string[];
   onSelect: (id: string) => void;
   onMove: (id: string, point: Point) => void;
   onCurve: (dancerId: string, curve: number) => void;
+  onGestureStart?: () => void;
+  onGestureEnd?: () => void;
 };
 
-export function StagePlan({ stage, dancers, positions, selectedId, editable, travels = [], curveIds = [], onSelect, onMove, onCurve }: Props) {
+export function StagePlan({
+  stage,
+  dancers,
+  positions,
+  selectedIds,
+  editable,
+  travels = [],
+  onSelect,
+  onMove,
+  onCurve,
+  onGestureStart,
+  onGestureEnd,
+}: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const dragId = useRef<string | null>(null);
   const dragKind = useRef<"dancer" | "curve" | null>(null);
@@ -66,12 +73,14 @@ export function StagePlan({ stage, dancers, positions, selectedId, editable, tra
       return;
     }
     if (!dragId.current) return;
-    onMove(dragId.current, clampToValid(clientToStage(event), stage));
+    onMove(dragId.current, clientToStage(event));
   }
 
   function endDrag() {
+    const active = dragKind.current !== null;
     dragId.current = null;
     dragKind.current = null;
+    if (active) onGestureEnd?.();
   }
 
   const verticals: number[] = [];
@@ -80,8 +89,9 @@ export function StagePlan({ stage, dancers, positions, selectedId, editable, tra
   for (let y = Math.ceil(minY); y <= Math.floor(maxY); y += 1) horizontals.push(y);
 
   const ordered = dancers.slice().sort((a, b) => a.order - b.order);
-  const selected = ordered.filter((dancer) => dancer.id === selectedId);
-  const others = ordered.filter((dancer) => dancer.id !== selectedId);
+  const selectedSet = new Set(selectedIds);
+  const selected = ordered.filter((dancer) => selectedSet.has(dancer.id));
+  const others = ordered.filter((dancer) => !selectedSet.has(dancer.id));
 
   return (
     <svg
@@ -155,7 +165,7 @@ export function StagePlan({ stage, dancers, positions, selectedId, editable, tra
         1 m
       </text>
       {travels.map((travel) => {
-        const active = travel.dancerId === selectedId || curveIds.includes(travel.dancerId);
+        const active = selectedSet.has(travel.dancerId);
         return (
           <polyline
             key={`path-${travel.dancerId}`}
@@ -171,7 +181,7 @@ export function StagePlan({ stage, dancers, positions, selectedId, editable, tra
       })}
       {[...others, ...selected].map((dancer) => {
         const point = positions.get(dancer.id) ?? { x: 0, y: 0 };
-        const active = dancer.id === selectedId;
+        const active = selectedSet.has(dancer.id);
         return (
           <g key={dancer.id} transform={`translate(${point.x} ${sy(point.y)})`}>
             <circle
@@ -181,11 +191,13 @@ export function StagePlan({ stage, dancers, positions, selectedId, editable, tra
               strokeWidth={active ? 0.07 : 0.03}
               role="button"
               aria-label={dancer.name}
+              aria-pressed={active}
               style={{ cursor: editable ? "grab" : "pointer" }}
               onPointerDown={(event) => {
                 event.stopPropagation();
                 onSelect(dancer.id);
                 if (!editable || !svgRef.current) return;
+                onGestureStart?.();
                 dragKind.current = "dancer";
                 dragId.current = dancer.id;
                 svgRef.current.setPointerCapture(event.pointerId);
@@ -206,7 +218,7 @@ export function StagePlan({ stage, dancers, positions, selectedId, editable, tra
       })}
       {editable
         ? travels
-            .filter((travel) => curveIds.includes(travel.dancerId))
+            .filter((travel) => selectedSet.has(travel.dancerId))
             .map((travel) => {
               const handle = pointOnCurve(travel.from, travel.to, travel.curve, 0.5);
               const dancer = dancers.find((item) => item.id === travel.dancerId);
@@ -225,6 +237,7 @@ export function StagePlan({ stage, dancers, positions, selectedId, editable, tra
                   onPointerDown={(event) => {
                     event.stopPropagation();
                     if (!svgRef.current) return;
+                    onGestureStart?.();
                     dragKind.current = "curve";
                     dragId.current = travel.dancerId;
                     svgRef.current.setPointerCapture(event.pointerId);

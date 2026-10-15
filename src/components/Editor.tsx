@@ -28,6 +28,8 @@ import {
   wingWaitingPoint,
   zoneLabel,
   zoneOf,
+  type Point,
+  type Stage,
   type StageShape,
 } from "@/lib/geometry";
 import { stageFrom } from "@/lib/validate";
@@ -59,6 +61,35 @@ function CrossIcon() {
   );
 }
 
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-4 w-4" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M4 7h16" strokeLinecap="round" />
+      <path d="M9 7V5h6v2" strokeLinejoin="round" />
+      <path d="M6.5 7l.8 12h9.4l.8-12" strokeLinejoin="round" />
+      <path d="M10 11v5M14 11v5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function groupDelta(origins: Point[], delta: Point, stage: Stage): Point {
+  const fits = (scale: number) =>
+    origins.every((origin) => {
+      const moved = roundPoint({ x: origin.x + delta.x * scale, y: origin.y + delta.y * scale });
+      return zoneOf(moved, stage) !== "dehors";
+    });
+  if (fits(1)) return delta;
+  if (!fits(0)) return { x: 0, y: 0 };
+  let low = 0;
+  let high = 1;
+  for (let step = 0; step < 16; step += 1) {
+    const mid = (low + high) / 2;
+    if (fits(mid)) low = mid;
+    else high = mid;
+  }
+  return { x: delta.x * low, y: delta.y * low };
+}
+
 function payloadOf(doc: ChoreographyDocument) {
   return {
     title: doc.title,
@@ -71,11 +102,20 @@ function payloadOf(doc: ChoreographyDocument) {
   };
 }
 
+function samePayload(a: ChoreographyDocument, b: ChoreographyDocument) {
+  return JSON.stringify(payloadOf(a)) === JSON.stringify(payloadOf(b));
+}
+
+function cloneDoc(doc: ChoreographyDocument): ChoreographyDocument {
+  return structuredClone(doc);
+}
+
 export function Editor({ initial }: { initial: ChoreographyDocument }) {
   const [doc, setDoc] = useState(initial);
   const [selectedFormationId, setSelectedFormationId] = useState(initial.formations[0]?.id ?? "");
-  const [selectedDancerId, setSelectedDancerId] = useState(initial.dancers[0]?.id ?? "");
-  const [curveDancerIds, setCurveDancerIds] = useState<string[]>(() => (initial.dancers[0] ? [initial.dancers[0].id] : []));
+  const [selectedDancerIds, setSelectedDancerIds] = useState<string[]>(() => (initial.dancers[0] ? [initial.dancers[0].id] : []));
+  const selectedDancerIdsRef = useRef(selectedDancerIds);
+  selectedDancerIdsRef.current = selectedDancerIds;
   const [newName, setNewName] = useState("");
   const [nameEditId, setNameEditId] = useState<string | null>(null);
   const [nameDraft, setNameDraft] = useState("");
@@ -84,6 +124,8 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
   const [playing, setPlaying] = useState(false);
   const [beat, setBeat] = useState(0);
   const [invitesOpen, setInvitesOpen] = useState(false);
+  const [shapeOpen, setShapeOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [status, setStatus] = useState<"saved" | "saving" | "error">("saved");
   const [saveError, setSaveError] = useState("");
   const [shape, setShape] = useState<StageShape>(initial.stageShape);
@@ -91,6 +133,14 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
   const [depth, setDepth] = useState(initial.stageDepth);
   const saved = useRef(JSON.stringify(payloadOf(initial)));
   const saveRequest = useRef(0);
+  const docRef = useRef(doc);
+  docRef.current = doc;
+  const pastRef = useRef<ChoreographyDocument[]>([]);
+  const futureRef = useRef<ChoreographyDocument[]>([]);
+  const gestureBaseRef = useRef<ChoreographyDocument | null>(null);
+  const [historyMark, setHistoryMark] = useState(0);
+  const undoRef = useRef<() => void>(() => {});
+  const redoRef = useRef<() => void>(() => {});
   const canEdit = doc.role !== "viewer";
   const editing = canEdit && !preview && !faceView;
   const stage = stageOf(doc);
@@ -98,7 +148,8 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
   const timeline = useMemo(() => buildTimeline(doc.formations), [doc.formations]);
   const selectedFormation =
     doc.formations.find((formation) => formation.id === selectedFormationId) ?? doc.formations[0];
-  const selectedDancer = doc.dancers.find((dancer) => dancer.id === selectedDancerId) ?? doc.dancers[0];
+  const soleDancerId = selectedDancerIds.length === 1 ? selectedDancerIds[0] : undefined;
+  const selectedDancer = soleDancerId ? doc.dancers.find((dancer) => dancer.id === soleDancerId) : undefined;
 
   const shown = useMemo(() => {
     if (preview) return samplePositions(beat, doc.formations, doc.dancers);
@@ -161,22 +212,146 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
     return () => window.cancelAnimationFrame(frame);
   }, [playing, doc.tempoTpm, timeline.totalBeats]);
 
-  function updateFormation(formationId: string, recipe: (formation: Formation) => Formation) {
-    setDoc((current) => ({
-      ...current,
-      formations: current.formations.map((formation) => (formation.id === formationId ? recipe(formation) : formation)),
-    }));
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (!canEdit) return;
+      const target = event.target;
+      if (target instanceof HTMLElement) {
+        const tag = target.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable) return;
+      }
+      const meta = event.ctrlKey || event.metaKey;
+      if (!meta) return;
+      const key = event.key.toLowerCase();
+      if (key === "z" && !event.shiftKey) {
+        event.preventDefault();
+        undoRef.current();
+        return;
+      }
+      if (key === "y" || (key === "z" && event.shiftKey)) {
+        event.preventDefault();
+        redoRef.current();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [canEdit]);
+
+  function bumpHistory() {
+    setHistoryMark((mark) => mark + 1);
   }
+
+  function beginGesture() {
+    if (!canEdit || gestureBaseRef.current) return;
+    gestureBaseRef.current = cloneDoc(docRef.current);
+  }
+
+  function commitGesture() {
+    const base = gestureBaseRef.current;
+    gestureBaseRef.current = null;
+    if (!base || samePayload(base, docRef.current)) return;
+    pastRef.current.push(base);
+    futureRef.current = [];
+    bumpHistory();
+  }
+
+  function reviseDoc(recipe: (current: ChoreographyDocument) => ChoreographyDocument) {
+    if (!canEdit) return;
+    if (!gestureBaseRef.current) gestureBaseRef.current = cloneDoc(docRef.current);
+    const next = recipe(docRef.current);
+    docRef.current = next;
+    setDoc(next);
+  }
+
+  function editDoc(recipe: (current: ChoreographyDocument) => ChoreographyDocument) {
+    if (!canEdit) return;
+    commitGesture();
+    const current = docRef.current;
+    const next = recipe(current);
+    if (samePayload(current, next)) return;
+    pastRef.current.push(cloneDoc(current));
+    futureRef.current = [];
+    docRef.current = next;
+    setDoc(next);
+    bumpHistory();
+  }
+
+  function showDocument(next: ChoreographyDocument) {
+    docRef.current = next;
+    setDoc(next);
+    setShape(next.stageShape);
+    setWidth(next.stageWidth);
+    setDepth(next.stageDepth);
+    setPlaying(false);
+    setPreview(false);
+    setFaceView(false);
+    setSelectedFormationId((id) => (next.formations.some((formation) => formation.id === id) ? id : (next.formations[0]?.id ?? "")));
+    setSelectedDancerIds((ids) => {
+      const kept = ids.filter((id) => next.dancers.some((dancer) => dancer.id === id));
+      selectedDancerIdsRef.current = kept;
+      return kept;
+    });
+    setNameEditId((id) => (id && next.dancers.some((dancer) => dancer.id === id) ? id : null));
+  }
+
+  function undo() {
+    if (!canEdit) return;
+    commitGesture();
+    const previous = pastRef.current.pop();
+    if (!previous) return;
+    futureRef.current.push(cloneDoc(docRef.current));
+    showDocument(previous);
+    bumpHistory();
+  }
+
+  function redo() {
+    if (!canEdit) return;
+    commitGesture();
+    const next = futureRef.current.pop();
+    if (!next) return;
+    pastRef.current.push(cloneDoc(docRef.current));
+    showDocument(next);
+    bumpHistory();
+  }
+
+  undoRef.current = undo;
+  redoRef.current = redo;
 
   function moveDancer(dancerId: string, point: { x: number; y: number }) {
     if (!selectedFormation || !editing) return;
-    const rounded = roundPoint(clampToValid(point, stage));
-    updateFormation(selectedFormation.id, (formation) => ({
-      ...formation,
-      positions: formation.positions.map((position) =>
-        position.dancerId === dancerId ? { ...position, x: rounded.x, y: rounded.y } : position,
-      ),
-    }));
+    const formationId = selectedFormation.id;
+    const selected = selectedDancerIdsRef.current;
+    const group = selected.includes(dancerId) && selected.length > 1 ? selected : [dancerId];
+    reviseDoc((current) => {
+      const formation = current.formations.find((item) => item.id === formationId);
+      if (!formation) return current;
+      const origin = formation.positions.find((position) => position.dancerId === dancerId);
+      if (!origin) return current;
+      const stageNow = stageOf(current);
+      let positions = formation.positions;
+      if (group.length === 1) {
+        const rounded = roundPoint(clampToValid(point, stageNow));
+        positions = formation.positions.map((position) =>
+          position.dancerId === dancerId ? { ...position, x: rounded.x, y: rounded.y } : position,
+        );
+      } else {
+        const origins = group.flatMap((id) => {
+          const position = formation.positions.find((item) => item.dancerId === id);
+          return position ? [{ x: position.x, y: position.y }] : [];
+        });
+        const delta = groupDelta(origins, { x: point.x - origin.x, y: point.y - origin.y }, stageNow);
+        const targets = new Set(group);
+        positions = formation.positions.map((position) => {
+          if (!targets.has(position.dancerId)) return position;
+          const moved = roundPoint({ x: position.x + delta.x, y: position.y + delta.y });
+          return { ...position, x: moved.x, y: moved.y };
+        });
+      }
+      return {
+        ...current,
+        formations: current.formations.map((item) => (item.id === formationId ? { ...item, positions } : item)),
+      };
+    });
   }
 
   function addDancer() {
@@ -188,22 +363,25 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
       color: nextColor(doc.dancers.map((item) => item.color)),
       order: doc.dancers.length,
     };
-    const point = wingWaitingPoint(doc.dancers.length, stage);
-    setDoc((current) => ({
-      ...current,
-      dancers: [...current.dancers, dancer],
-      formations: current.formations.map((formation) => ({
-        ...formation,
-        positions: [...formation.positions, { dancerId: dancer.id, x: point.x, y: point.y, curve: 0 }],
-      })),
-    }));
-    setSelectedDancerId(dancer.id);
+    editDoc((current) => {
+      const point = wingWaitingPoint(current.dancers.length, stageOf(current));
+      return {
+        ...current,
+        dancers: [...current.dancers, { ...dancer, order: current.dancers.length }],
+        formations: current.formations.map((formation) => ({
+          ...formation,
+          positions: [...formation.positions, { dancerId: dancer.id, x: point.x, y: point.y, curve: 0 }],
+        })),
+      };
+    });
+    const nextSelection = [dancer.id];
+    selectedDancerIdsRef.current = nextSelection;
+    setSelectedDancerIds(nextSelection);
     setNewName("");
   }
 
   function beginNameEdit(dancer: Dancer) {
     if (!editing) return;
-    setSelectedDancerId(dancer.id);
     setNameEditId(dancer.id);
     setNameDraft(dancer.name);
   }
@@ -215,50 +393,60 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
 
   function commitNameEdit() {
     const name = nameDraft.trim().replace(/\s+/g, " ");
-    if (!nameEditId || name.length < 1 || name.length > 40) return;
-    setDoc((current) => ({
+    const dancerId = nameEditId;
+    if (!dancerId || name.length < 1 || name.length > 40) return;
+    editDoc((current) => ({
       ...current,
-      dancers: current.dancers.map((dancer) => (dancer.id === nameEditId ? { ...dancer, name } : dancer)),
+      dancers: current.dancers.map((dancer) => (dancer.id === dancerId ? { ...dancer, name } : dancer)),
     }));
     cancelNameEdit();
   }
 
   function addFormation(copyId?: string) {
     if (!editing) return;
-    const source = doc.formations.find((formation) => formation.id === (copyId ?? selectedFormation?.id)) ?? doc.formations[0];
-    if (!source) return;
-    const created: Formation = {
-      id: crypto.randomUUID(),
-      order: source.order + 0.5,
-      label: "",
-      holdBeats: source.holdBeats,
-      transitionBeats: source.transitionBeats,
-      positions: source.positions.map((position) => ({ ...position, curve: position.curve ?? 0 })),
-    };
-    const formations = relabel([...doc.formations, created]);
-    setDoc({ ...doc, formations });
-    setSelectedFormationId(created.id);
+    const createdId = crypto.randomUUID();
+    editDoc((current) => {
+      const source = current.formations.find((formation) => formation.id === (copyId ?? selectedFormation?.id)) ?? current.formations[0];
+      if (!source) return current;
+      const created: Formation = {
+        id: createdId,
+        order: source.order + 0.5,
+        label: "",
+        holdBeats: source.holdBeats,
+        transitionBeats: source.transitionBeats,
+        positions: source.positions.map((position) => ({ ...position, curve: position.curve ?? 0 })),
+      };
+      return { ...current, formations: relabel([...current.formations, created]) };
+    });
+    setSelectedFormationId(createdId);
     setPreview(false);
     setPlaying(false);
   }
 
   function deleteFormation(id: string) {
     if (!editing || doc.formations.length <= 1) return;
-    const formations = relabel(doc.formations.filter((formation) => formation.id !== id));
-    setDoc({ ...doc, formations });
-    if (selectedFormationId === id) setSelectedFormationId(formations[0]?.id ?? "");
+    editDoc((current) => {
+      if (current.formations.length <= 1) return current;
+      return { ...current, formations: relabel(current.formations.filter((formation) => formation.id !== id)) };
+    });
+    if (selectedFormationId === id) {
+      const remaining = docRef.current.formations;
+      setSelectedFormationId(remaining.find((formation) => formation.id !== id)?.id ?? remaining[0]?.id ?? "");
+    }
   }
 
   function moveFormation(id: string, direction: -1 | 1) {
     if (!editing) return;
-    const ordered = doc.formations.slice().sort((a, b) => a.order - b.order);
-    const index = ordered.findIndex((formation) => formation.id === id);
-    const target = index + direction;
-    if (index < 0 || target < 0 || target >= ordered.length) return;
-    const next = ordered.slice();
-    const [item] = next.splice(index, 1);
-    next.splice(target, 0, item);
-    setDoc({ ...doc, formations: relabel(next.map((formation, order) => ({ ...formation, order }))) });
+    editDoc((current) => {
+      const ordered = current.formations.slice().sort((a, b) => a.order - b.order);
+      const index = ordered.findIndex((formation) => formation.id === id);
+      const target = index + direction;
+      if (index < 0 || target < 0 || target >= ordered.length) return current;
+      const next = ordered.slice();
+      const [item] = next.splice(index, 1);
+      next.splice(target, 0, item);
+      return { ...current, formations: relabel(next.map((formation, order) => ({ ...formation, order }))) };
+    });
   }
 
   function applyShape() {
@@ -270,20 +458,22 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
       return;
     }
     const next = stageFrom(shape, width, nextDepth);
-    const current = stageOf(doc);
-    setDoc((previous) => ({
-      ...previous,
-      stageShape: next.shape,
-      stageWidth: next.width,
-      stageDepth: next.depth,
-      formations: previous.formations.map((formation) => ({
-        ...formation,
-        positions: formation.positions.map((position) => {
-          const moved = roundPoint(migratePosition(position, current, next));
-          return { ...position, x: moved.x, y: moved.y };
-        }),
-      })),
-    }));
+    editDoc((current) => {
+      const from = stageOf(current);
+      return {
+        ...current,
+        stageShape: next.shape,
+        stageWidth: next.width,
+        stageDepth: next.depth,
+        formations: current.formations.map((formation) => ({
+          ...formation,
+          positions: formation.positions.map((position) => {
+            const moved = roundPoint(migratePosition(position, from, next));
+            return { ...position, x: moved.x, y: moved.y };
+          }),
+        })),
+      };
+    });
     setWidth(next.width);
     setDepth(next.depth);
   }
@@ -294,23 +484,73 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
     setPlaying(true);
   }
 
-  function toggleCurveDancer(dancerId: string) {
-    if (!editing) return;
-    setCurveDancerIds((current) =>
-      current.includes(dancerId) ? current.filter((id) => id !== dancerId) : [...current, dancerId],
-    );
+  function replaceSelection(next: string[]) {
+    selectedDancerIdsRef.current = next;
+    setSelectedDancerIds(next);
   }
 
-  function setCurve(curve: number) {
-    if (!editing || !selectedFormation || curveDancerIds.length === 0) return;
+  function toggleDancer(dancerId: string) {
+    const current = selectedDancerIdsRef.current;
+    replaceSelection(current.includes(dancerId) ? current.filter((id) => id !== dancerId) : [...current, dancerId]);
+  }
+
+  function selectFromStage(dancerId: string) {
+    const current = selectedDancerIdsRef.current;
+    if (!current.includes(dancerId)) replaceSelection([dancerId]);
+  }
+
+  function deleteDancer(dancerId: string) {
+    if (!editing || doc.dancers.length <= 1) return;
+    if (nameEditId === dancerId) cancelNameEdit();
+    editDoc((current) => {
+      if (current.dancers.length <= 1) return current;
+      return {
+        ...current,
+        dancers: current.dancers
+          .filter((dancer) => dancer.id !== dancerId)
+          .map((dancer, order) => ({ ...dancer, order })),
+        formations: current.formations.map((formation) => ({
+          ...formation,
+          positions: formation.positions.filter((position) => position.dancerId !== dancerId),
+        })),
+      };
+    });
+    replaceSelection(selectedDancerIdsRef.current.filter((id) => id !== dancerId));
+  }
+
+  function writeCurve(curve: number, record: (recipe: (current: ChoreographyDocument) => ChoreographyDocument) => void) {
+    if (!editing || !selectedFormation || selectedDancerIdsRef.current.length === 0) return;
+    const formationId = selectedFormation.id;
     const next = Math.round(Math.max(-MAX_CURVE, Math.min(MAX_CURVE, curve)) * 10) / 10;
-    const targets = new Set(curveDancerIds);
-    updateFormation(selectedFormation.id, (formation) => ({
-      ...formation,
-      positions: formation.positions.map((position) =>
-        targets.has(position.dancerId) ? { ...position, curve: next } : position,
+    const targets = new Set(selectedDancerIdsRef.current);
+    record((current) => ({
+      ...current,
+      formations: current.formations.map((formation) =>
+        formation.id === formationId
+          ? {
+              ...formation,
+              positions: formation.positions.map((position) =>
+                targets.has(position.dancerId) ? { ...position, curve: next } : position,
+              ),
+            }
+          : formation,
       ),
     }));
+  }
+
+  async function exportPdf() {
+    if (exporting) return;
+    setExporting(true);
+    setSaveError("");
+    try {
+      const { downloadTableauxPdf } = await import("@/lib/tableauxPdf");
+      await downloadTableauxPdf(doc);
+    } catch {
+      setSaveError("Le PDF n’a pas pu être créé.");
+      setStatus("error");
+    } finally {
+      setExporting(false);
+    }
   }
 
   const segment = preview ? segmentAt(beat, doc.formations) : null;
@@ -324,6 +564,8 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
         ? `${segmentFormation.label} · tenue`
         : `${segmentFormation.label} · déplacement`;
   const statusLabel = status === "saving" ? "Enregistrement…" : status === "error" ? "Non enregistré" : "Enregistré";
+  const canUndo = canEdit && historyMark >= 0 && pastRef.current.length > 0;
+  const canRedo = canEdit && historyMark >= 0 && futureRef.current.length > 0;
   const travels = useMemo(() => {
     const ordered = doc.formations.slice().sort((a, b) => a.order - b.order);
     const index = preview && segment ? segment.formationIndex : ordered.findIndex((formation) => formation.id === selectedFormation?.id);
@@ -349,7 +591,7 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
       ];
     });
   }, [doc.dancers, doc.formations, preview, segment, selectedFormation?.id]);
-  const curveTargets = doc.dancers.filter((dancer) => curveDancerIds.includes(dancer.id));
+  const curveTargets = doc.dancers.filter((dancer) => selectedDancerIds.includes(dancer.id));
   const targetCurves = curveTargets.map(
     (dancer) => selectedFormation?.positions.find((position) => position.dancerId === dancer.id)?.curve ?? 0,
   );
@@ -365,7 +607,12 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
         <input
           value={doc.title}
           disabled={!editing}
-          onChange={(event) => setDoc({ ...doc, title: event.target.value })}
+          onFocus={beginGesture}
+          onBlur={commitGesture}
+          onChange={(event) => {
+            const title = event.target.value;
+            reviseDoc((current) => ({ ...current, title }));
+          }}
           className="field max-w-xs font-display text-xl"
           aria-label="Titre"
         />
@@ -378,15 +625,47 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
             step={1}
             disabled={!editing}
             value={doc.tempoTpm}
+            onFocus={beginGesture}
+            onBlur={commitGesture}
             onChange={(event) => {
               const tempo = Number(event.target.value);
-              if (Number.isInteger(tempo) && tempo >= 40 && tempo <= 240) setDoc({ ...doc, tempoTpm: tempo });
+              if (Number.isInteger(tempo) && tempo >= 40 && tempo <= 240) {
+                reviseDoc((current) => ({ ...current, tempoTpm: tempo }));
+              }
             }}
             className="field w-24"
           />
         </label>
+        <button type="button" className="btn-ghost" onClick={() => setShapeOpen(true)}>
+          forme de la pièce
+        </button>
+        <button type="button" className="btn-ghost" disabled={exporting} onClick={() => void exportPdf()}>
+          {exporting ? "Création du PDF…" : "Exporter le PDF"}
+        </button>
         <span className="text-xs text-muted">{ROLE_LABELS[doc.role]}</span>
         <span className={`text-xs ${status === "error" ? "text-curtain" : "text-muted"}`}>{canEdit ? statusLabel : "Lecture seule"}</span>
+        <button
+          type="button"
+          className="btn-ghost h-10 w-10 shrink-0 px-0 leading-none"
+          style={{ color: "#000", opacity: 1, fontSize: "1.5rem", lineHeight: 1 }}
+          title="Annuler (Ctrl+Z)"
+          aria-label="Annuler"
+          disabled={!canUndo}
+          onClick={undo}
+        >
+          <span aria-hidden="true">↶</span>
+        </button>
+        <button
+          type="button"
+          className="btn-ghost h-10 w-10 shrink-0 px-0 leading-none"
+          style={{ color: "#000", opacity: 1, fontSize: "1.5rem", lineHeight: 1 }}
+          title="Rétablir (Ctrl+Y)"
+          aria-label="Rétablir"
+          disabled={!canRedo}
+          onClick={redo}
+        >
+          <span aria-hidden="true">↷</span>
+        </button>
         <div className="ml-auto flex flex-wrap items-center gap-2">
           {doc.role === "owner" ? (
             <button type="button" className="btn-ghost" onClick={() => setInvitesOpen(true)}>
@@ -436,13 +715,14 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
               stage={stage}
               dancers={doc.dancers}
               positions={shown}
-              selectedId={selectedDancer?.id ?? null}
+              selectedIds={selectedDancerIds}
               editable={editing}
               travels={travels}
-              curveIds={curveDancerIds}
-              onSelect={setSelectedDancerId}
+              onSelect={selectFromStage}
               onMove={moveDancer}
-              onCurve={(_dancerId, curve) => setCurve(curve)}
+              onCurve={(_dancerId, curve) => writeCurve(curve, reviseDoc)}
+              onGestureStart={beginGesture}
+              onGestureEnd={commitGesture}
             />
           )}
         </div>
@@ -479,23 +759,35 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
                   <>
                     <button
                       type="button"
-                      onClick={() => setSelectedDancerId(dancer.id)}
+                      aria-pressed={selectedDancerIds.includes(dancer.id)}
+                      onClick={() => toggleDancer(dancer.id)}
                       className={`flex min-w-0 flex-1 items-center gap-2 rounded-xl border px-2 py-2 text-left ${
-                        dancer.id === selectedDancer?.id ? "border-curtain bg-paper" : "border-line"
+                        selectedDancerIds.includes(dancer.id) ? "border-curtain bg-paper" : "border-line"
                       }`}
                     >
                       <span className="h-3 w-3 shrink-0 rounded-full" style={{ background: dancer.color }} />
                       <span className="truncate text-sm">{dancer.name}</span>
                     </button>
                     {editing ? (
-                      <button
-                        type="button"
-                        className="btn-ghost h-10 w-10 shrink-0 px-0"
-                        aria-label={`Modifier le nom de ${dancer.name}`}
-                        onClick={() => beginNameEdit(dancer)}
-                      >
-                        <PencilIcon />
-                      </button>
+                      <>
+                        <button
+                          type="button"
+                          className="btn-ghost h-10 w-10 shrink-0 px-0"
+                          aria-label={`Modifier le nom de ${dancer.name}`}
+                          onClick={() => beginNameEdit(dancer)}
+                        >
+                          <PencilIcon />
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-ghost h-10 w-10 shrink-0 px-0"
+                          aria-label={`Supprimer ${dancer.name}`}
+                          disabled={doc.dancers.length <= 1}
+                          onClick={() => deleteDancer(dancer.id)}
+                        >
+                          <TrashIcon />
+                        </button>
+                      </>
                     ) : null}
                   </>
                 )}
@@ -516,6 +808,8 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
                     disabled={!editing}
                     value={Number(selectedPoint.x.toFixed(2))}
                     className="field"
+                    onFocus={beginGesture}
+                    onBlur={commitGesture}
                     onChange={(event) => {
                       const x = Number(event.target.value);
                       if (Number.isFinite(x)) moveDancer(selectedDancer.id, { x, y: selectedPoint.y });
@@ -530,6 +824,8 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
                     disabled={!editing}
                     value={Number(selectedPoint.y.toFixed(2))}
                     className="field"
+                    onFocus={beginGesture}
+                    onBlur={commitGesture}
                     onChange={(event) => {
                       const y = Number(event.target.value);
                       if (Number.isFinite(y)) moveDancer(selectedDancer.id, { x: selectedPoint.x, y });
@@ -541,6 +837,74 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
                 {preview && zoneOf(selectedPoint, stage) === "dehors"
                   ? "En déplacement"
                   : zoneLabel(zoneOf(selectedPoint, stage))}
+              </p>
+            </div>
+          ) : selectedDancerIds.length > 1 ? (
+            <p className="mt-4 text-sm text-muted">
+              Plusieurs danseurs sont sélectionnés. Déplacez-les ensemble sur la scène.
+              {selectedFormation && selectedFormation.order < doc.formations.length - 1
+                ? " La courbure se modifie pour tout le groupe."
+                : ""}
+            </p>
+          ) : null}
+          {selectedFormation && selectedFormation.order < doc.formations.length - 1 && selectedDancerIds.length > 0 ? (
+            <div className="mt-4 grid gap-1 text-sm">
+              <span className="font-semibold">Courbure (m)</span>
+              {curveTargets.length === 0 ? (
+                <p className="text-sm text-muted">Choisissez les danseurs concernés.</p>
+              ) : targetCurves.every((value) => value === 0) && !editing ? (
+                <p className="text-sm text-muted">Ligne droite</p>
+              ) : targetCurves.every((value) => value === 0) ? (
+                <button type="button" className="btn-ghost justify-self-start" onClick={() => writeCurve(2, editDoc)}>
+                  Ajouter une courbe
+                </button>
+              ) : (
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="range"
+                    min={-MAX_CURVE}
+                    max={MAX_CURVE}
+                    step={0.1}
+                    disabled={!editing}
+                    value={shownCurve}
+                    aria-label="Courbure du déplacement"
+                    className="w-36"
+                    onPointerDown={(event) => {
+                      beginGesture();
+                      event.currentTarget.setPointerCapture(event.pointerId);
+                    }}
+                    onPointerUp={commitGesture}
+                    onPointerCancel={commitGesture}
+                    onBlur={commitGesture}
+                    onChange={(event) => writeCurve(Number(event.target.value), reviseDoc)}
+                  />
+                  <input
+                    type="number"
+                    min={-MAX_CURVE}
+                    max={MAX_CURVE}
+                    step={0.1}
+                    disabled={!editing}
+                    value={shownCurve}
+                    aria-label="Courbure en mètres"
+                    className="field"
+                    style={{ width: "4.5rem", paddingInline: "0.35rem", textAlign: "center", flexShrink: 0 }}
+                    onFocus={beginGesture}
+                    onBlur={commitGesture}
+                    onChange={(event) => {
+                      const curve = Number(event.target.value);
+                      if (Number.isFinite(curve)) writeCurve(curve, reviseDoc);
+                    }}
+                  />
+                  {editing ? (
+                    <button type="button" className="btn-ghost" onClick={() => writeCurve(0, editDoc)}>
+                      Ligne droite
+                    </button>
+                  ) : null}
+                </div>
+              )}
+              {sharedCurve === null ? <p className="text-xs text-muted">Ces danseurs n&apos;ont pas la même courbure.</p> : null}
+              <p className="text-xs text-muted">
+                La valeur s&apos;applique aux danseurs choisis, pour le déplacement vers le tableau suivant. 0 m suit la ligne droite. Le signe choisit le côté.
               </p>
             </div>
           ) : null}
@@ -565,60 +929,6 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
               </button>
             </form>
           ) : null}
-          <div className="mt-5 grid gap-3 border-t border-line pt-4">
-            <h2 className="text-sm font-semibold">Forme pour toute la pièce</h2>
-            <label className="grid gap-1 text-sm">
-              Forme
-              <select
-                value={shape}
-                disabled={!editing}
-                onChange={(event) => setShape(event.target.value as StageShape)}
-                className="field"
-              >
-                {SHAPES.map((item) => (
-                  <option key={item} value={item}>
-                    {SHAPE_LABELS[item]}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <div className="grid grid-cols-2 gap-2">
-              <label className="grid gap-1 text-sm">
-                {shape === "square" ? "Côté" : shape === "circle" ? "Diamètre" : "Largeur"}
-                <input
-                  type="number"
-                  min={2}
-                  max={40}
-                  step={0.5}
-                  disabled={!editing}
-                  value={width}
-                  onChange={(event) => setWidth(Number(event.target.value))}
-                  className="field"
-                />
-              </label>
-              {singleDimension ? null : (
-                <label className="grid gap-1 text-sm">
-                  Profondeur
-                  <input
-                    type="number"
-                    min={2}
-                    max={40}
-                    step={0.5}
-                    disabled={!editing}
-                    value={depth}
-                    onChange={(event) => setDepth(Number(event.target.value))}
-                    className="field"
-                  />
-                </label>
-              )}
-            </div>
-            <button type="button" className="btn-ghost justify-self-start" disabled={!editing} onClick={applyShape}>
-              Appliquer à toute la chorégraphie
-            </button>
-            <p className="text-xs text-muted">
-              Scène actuelle : {SHAPE_LABELS[doc.stageShape]}, {resolvedStage(stage).width} × {resolvedStage(stage).depth} m. Origine au centre, y vers le fond.
-            </p>
-          </div>
         </aside>
       </div>
       <div className="border-t border-line bg-paper-2 px-4 py-3">
@@ -662,10 +972,18 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
                 step={1}
                 disabled={!editing}
                 value={selectedFormation.holdBeats}
+                onFocus={beginGesture}
+                onBlur={commitGesture}
                 onChange={(event) => {
                   const holdBeats = Number(event.target.value);
                   if (!Number.isInteger(holdBeats) || holdBeats < 1 || holdBeats > 128) return;
-                  updateFormation(selectedFormation.id, (formation) => ({ ...formation, holdBeats }));
+                  const formationId = selectedFormation.id;
+                  reviseDoc((current) => ({
+                    ...current,
+                    formations: current.formations.map((formation) =>
+                      formation.id === formationId ? { ...formation, holdBeats } : formation,
+                    ),
+                  }));
                 }}
                 className="field w-28"
               />
@@ -679,83 +997,22 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
                 step={1}
                 disabled={!editing}
                 value={selectedFormation.transitionBeats}
+                onFocus={beginGesture}
+                onBlur={commitGesture}
                 onChange={(event) => {
                   const transitionBeats = Number(event.target.value);
                   if (!Number.isInteger(transitionBeats) || transitionBeats < 1 || transitionBeats > 128) return;
-                  updateFormation(selectedFormation.id, (formation) => ({ ...formation, transitionBeats }));
+                  const formationId = selectedFormation.id;
+                  reviseDoc((current) => ({
+                    ...current,
+                    formations: current.formations.map((formation) =>
+                      formation.id === formationId ? { ...formation, transitionBeats } : formation,
+                    ),
+                  }));
                 }}
                 className="field w-28"
               />
             </label>
-            {selectedFormation.order < doc.formations.length - 1 ? (
-              <div className="grid gap-1 text-sm">
-                <span>Courbure (m)</span>
-                <div className="flex flex-wrap gap-1">
-                  {doc.dancers.map((dancer) => {
-                    const on = curveDancerIds.includes(dancer.id);
-                    return (
-                      <button
-                        key={dancer.id}
-                        type="button"
-                        aria-pressed={on}
-                        disabled={!editing}
-                        onClick={() => toggleCurveDancer(dancer.id)}
-                        className={`rounded-full border px-2.5 py-1 text-sm ${on ? "border-curtain bg-curtain text-white" : "border-line bg-white text-ink"}`}
-                      >
-                        {dancer.name}
-                      </button>
-                    );
-                  })}
-                </div>
-                {curveTargets.length === 0 ? (
-                  <p className="text-sm text-muted">Choisissez les danseurs concernés.</p>
-                ) : targetCurves.every((value) => value === 0) && !editing ? (
-                  <p className="text-sm text-muted">Ligne droite</p>
-                ) : targetCurves.every((value) => value === 0) ? (
-                  <button type="button" className="btn-ghost justify-self-start" onClick={() => setCurve(2)}>
-                    Ajouter une courbe
-                  </button>
-                ) : (
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="range"
-                      min={-MAX_CURVE}
-                      max={MAX_CURVE}
-                      step={0.1}
-                      disabled={!editing}
-                      value={shownCurve}
-                      aria-label="Courbure du déplacement"
-                      className="w-36"
-                      onChange={(event) => setCurve(Number(event.target.value))}
-                    />
-                    <input
-                      type="number"
-                      min={-MAX_CURVE}
-                      max={MAX_CURVE}
-                      step={0.1}
-                      disabled={!editing}
-                      value={shownCurve}
-                      aria-label="Courbure en mètres"
-                      className="field"
-                      style={{ width: "4.5rem", paddingInline: "0.35rem", textAlign: "center", flexShrink: 0 }}
-                      onChange={(event) => {
-                        const curve = Number(event.target.value);
-                        if (Number.isFinite(curve)) setCurve(curve);
-                      }}
-                    />
-                    {editing ? (
-                      <button type="button" className="btn-ghost" onClick={() => setCurve(0)}>
-                        Ligne droite
-                      </button>
-                    ) : null}
-                  </div>
-                )}
-                {sharedCurve === null ? <p className="text-xs text-muted">Ces danseurs n'ont pas la même courbure.</p> : null}
-                <p className="max-w-sm text-xs text-muted">
-                  La valeur s'applique aux danseurs choisis, pour le déplacement vers le tableau suivant. 0 m suit la ligne droite. Le signe choisit le côté.
-                </p>
-              </div>
-            ) : null}
             {editing ? (
               <>
                 <button type="button" className="btn-ghost" onClick={() => moveFormation(selectedFormation.id, -1)}>
@@ -790,6 +1047,79 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
           </div>
         ) : null}
       </div>
+      {shapeOpen ? (
+        <div className="fixed inset-0 z-20 flex items-end justify-center bg-ink/40 p-4 sm:items-center" onClick={() => setShapeOpen(false)}>
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="shape-dialog-title"
+            className="w-full max-w-md rounded-2xl bg-paper-2 p-5 shadow-xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <h2 id="shape-dialog-title" className="font-display text-2xl">
+                Forme de la pièce
+              </h2>
+              <button type="button" className="btn-ghost" onClick={() => setShapeOpen(false)}>
+                Fermer
+              </button>
+            </div>
+            <div className="mt-4 grid gap-3">
+              <label className="grid gap-1 text-sm">
+                Forme
+                <select
+                  value={shape}
+                  disabled={!editing}
+                  onChange={(event) => setShape(event.target.value as StageShape)}
+                  className="field"
+                >
+                  {SHAPES.map((item) => (
+                    <option key={item} value={item}>
+                      {SHAPE_LABELS[item]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <label className="grid gap-1 text-sm">
+                  {shape === "square" ? "Côté" : shape === "circle" ? "Diamètre" : "Largeur"}
+                  <input
+                    type="number"
+                    min={2}
+                    max={40}
+                    step={0.5}
+                    disabled={!editing}
+                    value={width}
+                    onChange={(event) => setWidth(Number(event.target.value))}
+                    className="field"
+                  />
+                </label>
+                {singleDimension ? null : (
+                  <label className="grid gap-1 text-sm">
+                    Profondeur
+                    <input
+                      type="number"
+                      min={2}
+                      max={40}
+                      step={0.5}
+                      disabled={!editing}
+                      value={depth}
+                      onChange={(event) => setDepth(Number(event.target.value))}
+                      className="field"
+                    />
+                  </label>
+                )}
+              </div>
+              <button type="button" className="btn-ghost justify-self-start" disabled={!editing} onClick={applyShape}>
+                Appliquer à toute la chorégraphie
+              </button>
+              <p className="text-xs text-muted">
+                Scène actuelle : {SHAPE_LABELS[doc.stageShape]}, {resolvedStage(stage).width} × {resolvedStage(stage).depth} m. Origine au centre, y vers le fond.
+              </p>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {invitesOpen ? <InvitePanel choreographyId={doc.id} onClose={() => setInvitesOpen(false)} /> : null}
     </div>
   );
