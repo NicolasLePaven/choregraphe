@@ -81,7 +81,10 @@ export function parseDraft(value: unknown): { draft: DraftDocument } | { error: 
 
   const stageWidth = dimension(body.stageWidth);
   if (stageWidth === null) return { error: "La largeur doit être comprise entre 2 et 40 mètres." };
-  const rawDepth = body.stageShape === "square" || body.stageShape === "circle" ? stageWidth : dimension(body.stageDepth);
+  const rawDepth =
+    body.stageShape === "square" || body.stageShape === "circle" || body.stageShape === "semicircle"
+      ? stageWidth
+      : dimension(body.stageDepth);
   if (rawDepth === null) return { error: "La profondeur doit être comprise entre 2 et 40 mètres." };
 
   const tempoTpm = integerIn(body.tempoTpm, 40, 240);
@@ -182,7 +185,9 @@ export function parseCreateInput(value: unknown):
   const stageWidth = dimension(body.stageWidth);
   if (stageWidth === null) return { error: "La largeur doit être comprise entre 2 et 40 mètres." };
   const stageDepth =
-    body.stageShape === "square" || body.stageShape === "circle" ? stageWidth : dimension(body.stageDepth);
+    body.stageShape === "square" || body.stageShape === "circle" || body.stageShape === "semicircle"
+      ? stageWidth
+      : dimension(body.stageDepth);
   if (stageDepth === null) return { error: "La profondeur doit être comprise entre 2 et 40 mètres." };
   const tempoTpm = integerIn(body.tempoTpm, 40, 240);
   if (tempoTpm === null) return { error: "Le TPM doit être un entier entre 40 et 240." };

@@ -98,6 +98,7 @@ export const SHAPE_LABELS: Record<StageShape, string> = {
   square: "Carrée",
   oval: "Ovale",
   circle: "Circulaire",
+  semicircle: "Demi-cercle",
 };
 
 export const ROLE_LABELS: Record<Role, string> = {

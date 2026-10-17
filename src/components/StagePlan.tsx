@@ -125,6 +125,13 @@ export function StagePlan({
       />
       {resolved.shape === "oval" || resolved.shape === "circle" ? (
         <ellipse cx={0} cy={0} rx={resolved.width / 2} ry={resolved.depth / 2} fill="#3c2c24" stroke="#e7c7a1" strokeWidth={0.06} />
+      ) : resolved.shape === "semicircle" ? (
+        <path
+          d={`M ${-resolved.width / 2} ${sy(resolved.depth / 2)} A ${resolved.width / 2} ${resolved.width / 2} 0 0 0 ${resolved.width / 2} ${sy(resolved.depth / 2)} Z`}
+          fill="#3c2c24"
+          stroke="#e7c7a1"
+          strokeWidth={0.06}
+        />
       ) : (
         <rect
           x={-resolved.width / 2}

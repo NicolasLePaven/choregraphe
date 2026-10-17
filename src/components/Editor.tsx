@@ -34,7 +34,7 @@ import {
 } from "@/lib/geometry";
 import { stageFrom } from "@/lib/validate";
 
-const SHAPES: StageShape[] = ["rectangle", "square", "oval", "circle"];
+const SHAPES: StageShape[] = ["rectangle", "square", "oval", "circle", "semicircle"];
 
 function PencilIcon() {
   return (
@@ -206,7 +206,8 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
   const [invitesOpen, setInvitesOpen] = useState(false);
   const [shapeOpen, setShapeOpen] = useState(false);
   const [openMenu, setOpenMenu] = useState<"projet" | "settings" | null>(null);
-  const menuBarRef = useRef<HTMLDivElement>(null);
+  const projetMenuRef = useRef<HTMLDivElement>(null);
+  const settingsMenuRef = useRef<HTMLDivElement>(null);
   const [exporting, setExporting] = useState(false);
   const [status, setStatus] = useState<"saved" | "saving" | "error">("saved");
   const [saveError, setSaveError] = useState("");
@@ -226,7 +227,7 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
   const canEdit = doc.role !== "viewer";
   const editing = canEdit && !preview && !faceView;
   const stage = stageOf(doc);
-  const singleDimension = shape === "square" || shape === "circle";
+  const singleDimension = shape === "square" || shape === "circle" || shape === "semicircle";
   const timeline = useMemo(() => buildTimeline(doc.formations), [doc.formations]);
   const scale = useMemo(() => timeScale(timeline.totalBeats, doc.tempoTpm), [timeline.totalBeats, doc.tempoTpm]);
   const selectedFormation =
@@ -337,15 +338,18 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
   useEffect(() => {
     if (!openMenu) return;
     function onPointerDown(event: PointerEvent) {
-      if (!menuBarRef.current?.contains(event.target as Node)) setOpenMenu(null);
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (projetMenuRef.current?.contains(target) || settingsMenuRef.current?.contains(target)) return;
+      setOpenMenu(null);
     }
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") setOpenMenu(null);
     }
-    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("pointerdown", onPointerDown, true);
     window.addEventListener("keydown", onKeyDown);
     return () => {
-      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("pointerdown", onPointerDown, true);
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [openMenu]);
@@ -847,8 +851,8 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
           src={`/api/choregraphies/${doc.id}/musique?v=${musicVersion}`}
         />
       ) : null}
-      <div ref={menuBarRef} className="flex flex-wrap items-center gap-3 border-b border-line bg-paper-2 px-4 py-3">
-        <div className="menu">
+      <div className="flex flex-wrap items-center gap-3 border-b border-line bg-paper-2 px-4 py-3">
+        <div className="menu" ref={projetMenuRef}>
           <button
             type="button"
             className="menu-trigger"
@@ -899,7 +903,7 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
             </div>
           ) : null}
         </div>
-        <div className="menu">
+        <div className="menu" ref={settingsMenuRef}>
           <button
             type="button"
             className="menu-trigger"
@@ -921,7 +925,7 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
                   setShapeOpen(true);
                 }}
               >
-                Forme de la pièce
+                Forme de la scène
               </button>
               <label className={`menu-item ${!canEdit || musicBusy ? "pointer-events-none opacity-45" : "cursor-pointer"}`}>
                 Choisir une musique
@@ -1435,7 +1439,7 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
           >
             <div className="flex items-start justify-between gap-3">
               <h2 id="shape-dialog-title" className="font-display text-2xl">
-                Forme de la pièce
+                Forme de la scène
               </h2>
               <button type="button" className="btn-ghost" onClick={() => setShapeOpen(false)}>
                 Fermer
@@ -1459,7 +1463,7 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
               </label>
               <div className="grid grid-cols-2 gap-2">
                 <label className="grid gap-1 text-sm">
-                  {shape === "square" ? "Côté" : shape === "circle" ? "Diamètre" : "Largeur"}
+                  {shape === "square" ? "Côté" : shape === "circle" || shape === "semicircle" ? "Diamètre" : "Largeur"}
                   <input
                     type="number"
                     min={2}
