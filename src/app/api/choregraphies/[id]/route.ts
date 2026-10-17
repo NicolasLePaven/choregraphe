@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { loadChoreography, requireApiSession, toDocument } from "@/lib/access";
+import { removeMusicFiles } from "@/lib/music";
 import { prisma } from "@/lib/prisma";
 import { parseDraft } from "@/lib/validate";
 
@@ -101,10 +102,14 @@ export async function DELETE(_request: Request, context: RouteContext) {
   const auth = await requireApiSession();
   if (!auth.session) return auth.response;
   const { id } = await context.params;
-  const choreography = await prisma.choreography.findUnique({ where: { id }, select: { ownerId: true } });
+  const choreography = await prisma.choreography.findUnique({
+    where: { id },
+    select: { ownerId: true, musicFile: true },
+  });
   if (!choreography || choreography.ownerId !== auth.session.userId) {
     return NextResponse.json({ error: "Chorégraphie introuvable." }, { status: 404 });
   }
   await prisma.choreography.delete({ where: { id } });
+  if (choreography.musicFile) await removeMusicFiles(id);
   return NextResponse.json({ ok: true });
 }

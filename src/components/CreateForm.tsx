@@ -1,11 +1,12 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import type { StageShape } from "@/lib/geometry";
 import { SHAPE_LABELS } from "@/lib/domain";
 
-const SHAPES: StageShape[] = ["rectangle", "square", "oval", "circle"];
+const SHAPES: StageShape[] = ["rectangle", "square", "oval", "circle", "semicircle"];
 
 export function CreateForm() {
   const router = useRouter();
@@ -13,7 +14,7 @@ export function CreateForm() {
   const [names, setNames] = useState(["Danseur 1"]);
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
-  const singleDimension = shape === "square" || shape === "circle";
+  const singleDimension = shape === "square" || shape === "circle" || shape === "semicircle";
 
   function updateName(index: number, value: string) {
     setNames((current) => current.map((name, nameIndex) => (nameIndex === index ? value : name)));
@@ -70,7 +71,7 @@ export function CreateForm() {
       </label>
       <div className="grid gap-4 sm:grid-cols-2">
         <label className="grid gap-1 text-sm">
-          {shape === "square" ? "Côté (m)" : shape === "circle" ? "Diamètre (m)" : "Largeur (m)"}
+          {shape === "square" ? "Côté (m)" : shape === "circle" || shape === "semicircle" ? "Diamètre (m)" : "Largeur (m)"}
           <input name="width" type="number" min={2} max={40} step={0.5} defaultValue={12} required className="field" />
         </label>
         {singleDimension ? null : (
@@ -113,9 +114,14 @@ export function CreateForm() {
         </button>
       </fieldset>
       {error ? <p className="text-sm text-curtain">{error}</p> : null}
-      <button type="submit" className="btn-primary justify-self-start" disabled={pending}>
-        {pending ? "Création…" : "Créer"}
-      </button>
+      <div className="flex items-center gap-2">
+        <button type="submit" className="btn-primary" disabled={pending}>
+          {pending ? "Création…" : "Créer"}
+        </button>
+        <Link href="/choregraphies" className="btn-ghost">
+          Annuler
+        </Link>
+      </div>
     </form>
   );
 }

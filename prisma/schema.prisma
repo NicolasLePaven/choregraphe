@@ -26,6 +26,8 @@ model Choreography {
   stageWidth  Float
   stageDepth  Float
   tempoTpm    Int
+  musicFile   String?
+  musicName   String?
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
   dancers     Dancer[]

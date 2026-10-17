@@ -35,6 +35,7 @@ export type ChoreographyDocument = {
   stageWidth: number;
   stageDepth: number;
   tempoTpm: number;
+  musicName: string | null;
   role: Role;
   dancers: Dancer[];
   formations: Formation[];
@@ -97,6 +98,7 @@ export const SHAPE_LABELS: Record<StageShape, string> = {
   square: "Carrée",
   oval: "Ovale",
   circle: "Circulaire",
+  semicircle: "Demi-cercle",
 };
 
 export const ROLE_LABELS: Record<Role, string> = {

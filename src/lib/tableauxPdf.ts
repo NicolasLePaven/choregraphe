@@ -170,6 +170,28 @@ function drawTableau(
       borderColor: STAGE_LINE,
       borderWidth: 1.2,
     });
+  } else if (resolved.shape === "semicircle") {
+    const radius = (resolved.width / 2) * scale;
+    const center = map(0, resolved.depth / 2);
+    page.drawEllipse({
+      x: center.x,
+      y: center.y,
+      xScale: radius,
+      yScale: radius,
+      color: STAGE_FILL,
+      borderColor: STAGE_LINE,
+      borderWidth: 1.2,
+    });
+    page.drawRectangle({
+      x: center.x - radius - 1,
+      y: center.y,
+      width: radius * 2 + 2,
+      height: radius + 2,
+      color: rgb(1, 1, 1),
+    });
+    const left = map(-resolved.width / 2, resolved.depth / 2);
+    const right = map(resolved.width / 2, resolved.depth / 2);
+    page.drawLine({ start: left, end: right, thickness: 1.2, color: STAGE_LINE });
   } else {
     page.drawRectangle({
       x: stageOrigin.x,

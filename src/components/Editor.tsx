@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FrontStage } from "@/components/FrontStage";
 import { StagePlan } from "@/components/StagePlan";
@@ -34,7 +34,7 @@ import {
 } from "@/lib/geometry";
 import { stageFrom } from "@/lib/validate";
 
-const SHAPES: StageShape[] = ["rectangle", "square", "oval", "circle"];
+const SHAPES: StageShape[] = ["rectangle", "square", "oval", "circle", "semicircle"];
 
 function PencilIcon() {
   return (
@@ -68,6 +68,38 @@ function TrashIcon() {
       <path d="M9 7V5h6v2" strokeLinejoin="round" />
       <path d="M6.5 7l.8 12h9.4l.8-12" strokeLinejoin="round" />
       <path d="M10 11v5M14 11v5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function PlayIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-4 w-4" aria-hidden="true">
+      <path d="M8 5.5v13l11-6.5Z" fill="currentColor" />
+    </svg>
+  );
+}
+
+function PauseIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-4 w-4" aria-hidden="true">
+      <path d="M6 5h4.2v14H6zm7.8 0H18v14h-4.2Z" fill="currentColor" />
+    </svg>
+  );
+}
+
+function StopIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-4 w-4" aria-hidden="true">
+      <rect x="6" y="6" width="12" height="12" fill="currentColor" />
+    </svg>
+  );
+}
+
+function MenuChevron() {
+  return (
+    <svg viewBox="0 0 12 12" className="menu-chevron" aria-hidden="true">
+      <path d="M2.2 4.3 6 8l3.8-3.7" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -110,7 +142,49 @@ function cloneDoc(doc: ChoreographyDocument): ChoreographyDocument {
   return structuredClone(doc);
 }
 
+type TickWeight = "minor" | "mid" | "major";
+
+function timeScale(totalBeats: number, tempoTpm: number) {
+  const durationSec = tempoTpm > 0 ? (totalBeats * 60) / tempoTpm : 0;
+  const ticks: { seconds: number; weight: TickWeight; label: string }[] = [];
+  if (durationSec > 0) {
+    const minorStep = durationSec < 60 ? 1 : 5;
+    const last = Math.floor((durationSec + 1e-6) / minorStep);
+    for (let index = 0; index <= last; index += 1) {
+      const seconds = index * minorStep;
+      const weight = tickWeight(seconds, durationSec);
+      ticks.push({ seconds, weight, label: tickLabel(seconds, weight, durationSec) });
+    }
+  }
+  return { durationSec, ticks };
+}
+
+function tickWeight(seconds: number, durationSec: number): TickWeight {
+  if (durationSec >= 60) {
+    if (seconds % 30 === 0) return "major";
+    if (seconds % 10 === 0) return "mid";
+    return "minor";
+  }
+  if (seconds % 10 === 0) return "major";
+  if (seconds % 5 === 0) return "mid";
+  return "minor";
+}
+
+function tickLabel(seconds: number, weight: TickWeight, durationSec: number) {
+  if (durationSec >= 60) return weight === "major" ? formatClock(seconds) : "";
+  if (weight === "minor" && durationSec >= 10) return "";
+  return `${Math.round(seconds)}s`;
+}
+
+function formatClock(seconds: number) {
+  const total = Math.round(seconds);
+  const mins = Math.floor(total / 60);
+  const secs = total % 60;
+  return `${mins}:${secs.toString().padStart(2, "0")}`;
+}
+
 export function Editor({ initial }: { initial: ChoreographyDocument }) {
+  const router = useRouter();
   const [doc, setDoc] = useState(initial);
   const [selectedFormationId, setSelectedFormationId] = useState(initial.formations[0]?.id ?? "");
   const [selectedDancerIds, setSelectedDancerIds] = useState<string[]>(() => (initial.dancers[0] ? [initial.dancers[0].id] : []));
@@ -123,8 +197,17 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
   const [faceView, setFaceView] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [beat, setBeat] = useState(0);
+  const beatRef = useRef(0);
+  beatRef.current = beat;
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const [musicError, setMusicError] = useState("");
+  const [musicBusy, setMusicBusy] = useState(false);
+  const [musicVersion, setMusicVersion] = useState(0);
   const [invitesOpen, setInvitesOpen] = useState(false);
   const [shapeOpen, setShapeOpen] = useState(false);
+  const [openMenu, setOpenMenu] = useState<"projet" | "settings" | null>(null);
+  const projetMenuRef = useRef<HTMLDivElement>(null);
+  const settingsMenuRef = useRef<HTMLDivElement>(null);
   const [exporting, setExporting] = useState(false);
   const [status, setStatus] = useState<"saved" | "saving" | "error">("saved");
   const [saveError, setSaveError] = useState("");
@@ -144,8 +227,9 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
   const canEdit = doc.role !== "viewer";
   const editing = canEdit && !preview && !faceView;
   const stage = stageOf(doc);
-  const singleDimension = shape === "square" || shape === "circle";
+  const singleDimension = shape === "square" || shape === "circle" || shape === "semicircle";
   const timeline = useMemo(() => buildTimeline(doc.formations), [doc.formations]);
+  const scale = useMemo(() => timeScale(timeline.totalBeats, doc.tempoTpm), [timeline.totalBeats, doc.tempoTpm]);
   const selectedFormation =
     doc.formations.find((formation) => formation.id === selectedFormationId) ?? doc.formations[0];
   const soleDancerId = selectedDancerIds.length === 1 ? selectedDancerIds[0] : undefined;
@@ -187,30 +271,88 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
   }, [serialized, canEdit, doc.id]);
 
   useEffect(() => {
-    if (!playing) return;
+    if (!playing) {
+      audioRef.current?.pause();
+      return;
+    }
     let frame = 0;
     let last = performance.now();
     const loop = (now: number) => {
-      const dt = (now - last) / 1000;
-      last = now;
-      let reachedEnd = false;
-      setBeat((current) => {
-        const next = current + dt * (doc.tempoTpm / 60);
+      const currentAudio = audioRef.current;
+      const duration = currentAudio && Number.isFinite(currentAudio.duration) ? currentAudio.duration : null;
+      const musicDrives = Boolean(
+        doc.musicName &&
+          currentAudio &&
+          currentAudio.readyState >= 2 &&
+          !currentAudio.ended &&
+          !currentAudio.paused &&
+          (duration === null || currentAudio.currentTime < duration - 0.05),
+      );
+      if (musicDrives && currentAudio) {
+        const next = currentAudio.currentTime * (doc.tempoTpm / 60);
+        last = now;
         if (next >= timeline.totalBeats) {
-          reachedEnd = true;
-          return timeline.totalBeats;
+          setBeat(timeline.totalBeats);
+          setPlaying(false);
+          return;
         }
-        return next;
-      });
-      if (reachedEnd) {
-        setPlaying(false);
-        return;
+        setBeat(next);
+      } else {
+        const dt = (now - last) / 1000;
+        last = now;
+        let reachedEnd = false;
+        setBeat((current) => {
+          const next = current + dt * (doc.tempoTpm / 60);
+          if (next >= timeline.totalBeats) {
+            reachedEnd = true;
+            return timeline.totalBeats;
+          }
+          return next;
+        });
+        if (reachedEnd) {
+          setPlaying(false);
+          return;
+        }
       }
       frame = window.requestAnimationFrame(loop);
     };
     frame = window.requestAnimationFrame(loop);
     return () => window.cancelAnimationFrame(frame);
-  }, [playing, doc.tempoTpm, timeline.totalBeats]);
+  }, [playing, doc.tempoTpm, doc.musicName, timeline.totalBeats]);
+
+  useEffect(() => {
+    if (playing) return;
+    const audio = audioRef.current;
+    if (!audio || !doc.musicName) return;
+    const target = Math.max(0, beat * (60 / doc.tempoTpm));
+    const duration = Number.isFinite(audio.duration) ? audio.duration : target;
+    const nextTime = Math.min(target, duration);
+    if (Math.abs(audio.currentTime - nextTime) <= 0.05) return;
+    try {
+      audio.currentTime = nextTime;
+    } catch {
+      // Le navigateur refuse le déplacement tant que le fichier n'est pas prêt.
+    }
+  }, [playing, beat, doc.musicName, doc.tempoTpm]);
+
+  useEffect(() => {
+    if (!openMenu) return;
+    function onPointerDown(event: PointerEvent) {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (projetMenuRef.current?.contains(target) || settingsMenuRef.current?.contains(target)) return;
+      setOpenMenu(null);
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpenMenu(null);
+    }
+    window.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [openMenu]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -255,6 +397,35 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
     bumpHistory();
   }
 
+  async function leaveAndSave() {
+    const body = JSON.stringify(payloadOf(docRef.current));
+    if (!canEdit || body === saved.current) {
+      router.push("/choregraphies");
+      return;
+    }
+    const requestId = saveRequest.current + 1;
+    saveRequest.current = requestId;
+    setStatus("saving");
+    const response = await fetch(`/api/choregraphies/${doc.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body,
+    });
+    const data = (await response.json().catch(() => null)) as { error?: string } | null;
+    if (!response.ok) {
+      if (requestId !== saveRequest.current) return;
+      setStatus("error");
+      setSaveError(data?.error ?? "Enregistrement impossible.");
+      return;
+    }
+    if (requestId === saveRequest.current) {
+      saved.current = body;
+      setStatus("saved");
+      setSaveError("");
+    }
+    router.push("/choregraphies");
+  }
+
   function reviseDoc(recipe: (current: ChoreographyDocument) => ChoreographyDocument) {
     if (!canEdit) return;
     if (!gestureBaseRef.current) gestureBaseRef.current = cloneDoc(docRef.current);
@@ -277,8 +448,9 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
   }
 
   function showDocument(next: ChoreographyDocument) {
-    docRef.current = next;
-    setDoc(next);
+    const merged = { ...next, musicName: docRef.current.musicName };
+    docRef.current = merged;
+    setDoc(merged);
     setShape(next.stageShape);
     setWidth(next.stageWidth);
     setDepth(next.stageDepth);
@@ -480,8 +652,76 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
 
   function play() {
     setPreview(true);
-    if (beat >= timeline.totalBeats) setBeat(0);
+    const atEnd = beatRef.current >= timeline.totalBeats - 0.001;
+    const start = atEnd ? 0 : beatRef.current;
+    if (atEnd) setBeat(start);
+    const audio = audioRef.current;
+    if (audio && doc.musicName) {
+      const target = Math.max(0, start * (60 / doc.tempoTpm));
+      const duration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : null;
+      const nextTime = duration === null ? target : Math.min(target, Math.max(0, duration - 0.05));
+      try {
+        if (Math.abs(audio.currentTime - nextTime) > 0.05) audio.currentTime = nextTime;
+      } catch {
+        // Le navigateur refuse le déplacement tant que le fichier n'est pas prêt.
+      }
+      void audio.play().catch(() => {
+        setMusicError("La musique n'a pas pu être lue.");
+      });
+    }
     setPlaying(true);
+  }
+
+  function stopPlayback() {
+    setPlaying(false);
+    setPreview(false);
+    setBeat(0);
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.pause();
+    try {
+      audio.currentTime = 0;
+    } catch {
+      // Le fichier n'est pas encore chargé.
+    }
+  }
+
+  function rememberMusic(musicName: string | null) {
+    const next = { ...docRef.current, musicName };
+    docRef.current = next;
+    setDoc(next);
+  }
+
+  async function chooseMusic(file: File) {
+    if (!canEdit) return;
+    setMusicBusy(true);
+    setMusicError("");
+    const body = new FormData();
+    body.set("file", file);
+    const response = await fetch(`/api/choregraphies/${doc.id}/musique`, { method: "POST", body });
+    const data = (await response.json().catch(() => null)) as { error?: string; musicName?: string } | null;
+    setMusicBusy(false);
+    if (!response.ok || !data?.musicName) {
+      setMusicError(data?.error ?? "Envoi impossible.");
+      return;
+    }
+    rememberMusic(data.musicName);
+    setMusicVersion((version) => version + 1);
+  }
+
+  async function removeMusic() {
+    if (!canEdit || !doc.musicName) return;
+    setMusicBusy(true);
+    setMusicError("");
+    stopPlayback();
+    const response = await fetch(`/api/choregraphies/${doc.id}/musique`, { method: "DELETE" });
+    const data = (await response.json().catch(() => null)) as { error?: string } | null;
+    setMusicBusy(false);
+    if (!response.ok) {
+      setMusicError(data?.error ?? "Retrait impossible.");
+      return;
+    }
+    rememberMusic(null);
   }
 
   function replaceSelection(next: string[]) {
@@ -597,13 +837,127 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
   );
   const sharedCurve = targetCurves.length > 0 && targetCurves.every((value) => value === targetCurves[0]) ? targetCurves[0] : null;
   const shownCurve = sharedCurve ?? targetCurves[0] ?? 0;
+  const orderedFormations = doc.formations.slice().sort((a, b) => a.order - b.order);
+  const selectedFormationIndex = orderedFormations.findIndex((formation) => formation.id === selectedFormation?.id);
+  const nextFormation = selectedFormationIndex >= 0 ? orderedFormations[selectedFormationIndex + 1] : undefined;
 
   return (
     <div className="flex h-[calc(100dvh-4rem)] w-full min-w-0 flex-col">
+      {doc.musicName ? (
+        <audio
+          key={`${doc.musicName}-${musicVersion}`}
+          ref={audioRef}
+          preload="auto"
+          src={`/api/choregraphies/${doc.id}/musique?v=${musicVersion}`}
+        />
+      ) : null}
       <div className="flex flex-wrap items-center gap-3 border-b border-line bg-paper-2 px-4 py-3">
-        <Link href="/choregraphies" className="text-sm text-muted hover:text-ink">
-          Retour
-        </Link>
+        <div className="menu" ref={projetMenuRef}>
+          <button
+            type="button"
+            className="menu-trigger"
+            aria-expanded={openMenu === "projet"}
+            aria-haspopup="menu"
+            onClick={() => setOpenMenu((current) => (current === "projet" ? null : "projet"))}
+          >
+            Projet
+            <MenuChevron />
+          </button>
+          {openMenu === "projet" ? (
+            <div role="menu" className="menu-panel">
+              <button
+                type="button"
+                role="menuitem"
+                className="menu-item"
+                disabled={doc.role !== "owner"}
+                onClick={() => {
+                  setOpenMenu(null);
+                  setInvitesOpen(true);
+                }}
+              >
+                Inviter un créateur
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="menu-item"
+                disabled={exporting}
+                onClick={() => {
+                  setOpenMenu(null);
+                  void exportPdf();
+                }}
+              >
+                {exporting ? "Création du PDF…" : "Exporter en PDF"}
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="menu-item"
+                onClick={() => {
+                  setOpenMenu(null);
+                  void leaveAndSave();
+                }}
+              >
+                Quitter et enregistrer
+              </button>
+            </div>
+          ) : null}
+        </div>
+        <div className="menu" ref={settingsMenuRef}>
+          <button
+            type="button"
+            className="menu-trigger"
+            aria-expanded={openMenu === "settings"}
+            aria-haspopup="menu"
+            onClick={() => setOpenMenu((current) => (current === "settings" ? null : "settings"))}
+          >
+            Paramètres de chorégraphie
+            <MenuChevron />
+          </button>
+          {openMenu === "settings" ? (
+            <div role="menu" className="menu-panel">
+              <button
+                type="button"
+                role="menuitem"
+                className="menu-item"
+                onClick={() => {
+                  setOpenMenu(null);
+                  setShapeOpen(true);
+                }}
+              >
+                Forme de la scène
+              </button>
+              <label className={`menu-item ${!canEdit || musicBusy ? "pointer-events-none opacity-45" : "cursor-pointer"}`}>
+                Choisir une musique
+                <input
+                  type="file"
+                  accept=".mp3,.wav,.ogg,.m4a,audio/mpeg,audio/wav,audio/ogg,audio/mp4"
+                  className="sr-only"
+                  disabled={!canEdit || musicBusy}
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    event.target.value = "";
+                    setOpenMenu(null);
+                    if (file) void chooseMusic(file);
+                  }}
+                />
+              </label>
+              <button
+                type="button"
+                role="menuitem"
+                className="menu-item"
+                title={doc.musicName ?? "Aucune musique"}
+                disabled={!doc.musicName || !canEdit || musicBusy}
+                onClick={() => {
+                  setOpenMenu(null);
+                  void removeMusic();
+                }}
+              >
+                Retirer la musique
+              </button>
+            </div>
+          ) : null}
+        </div>
         <input
           value={doc.title}
           disabled={!editing}
@@ -616,38 +970,11 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
           className="field max-w-xs font-display text-xl"
           aria-label="Titre"
         />
-        <label className="flex items-center gap-2 text-sm">
-          TPM
-          <input
-            type="number"
-            min={40}
-            max={240}
-            step={1}
-            disabled={!editing}
-            value={doc.tempoTpm}
-            onFocus={beginGesture}
-            onBlur={commitGesture}
-            onChange={(event) => {
-              const tempo = Number(event.target.value);
-              if (Number.isInteger(tempo) && tempo >= 40 && tempo <= 240) {
-                reviseDoc((current) => ({ ...current, tempoTpm: tempo }));
-              }
-            }}
-            className="field w-24"
-          />
-        </label>
-        <button type="button" className="btn-ghost" onClick={() => setShapeOpen(true)}>
-          forme de la pièce
-        </button>
-        <button type="button" className="btn-ghost" disabled={exporting} onClick={() => void exportPdf()}>
-          {exporting ? "Création du PDF…" : "Exporter le PDF"}
-        </button>
         <span className="text-xs text-muted">{ROLE_LABELS[doc.role]}</span>
         <span className={`text-xs ${status === "error" ? "text-curtain" : "text-muted"}`}>{canEdit ? statusLabel : "Lecture seule"}</span>
         <button
           type="button"
-          className="btn-ghost h-10 w-10 shrink-0 px-0 leading-none"
-          style={{ color: "#000", opacity: 1, fontSize: "1.5rem", lineHeight: 1 }}
+          className="btn-ghost history-btn h-10 w-10 shrink-0 px-0"
           title="Annuler (Ctrl+Z)"
           aria-label="Annuler"
           disabled={!canUndo}
@@ -657,8 +984,7 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
         </button>
         <button
           type="button"
-          className="btn-ghost h-10 w-10 shrink-0 px-0 leading-none"
-          style={{ color: "#000", opacity: 1, fontSize: "1.5rem", lineHeight: 1 }}
+          className="btn-ghost history-btn h-10 w-10 shrink-0 px-0"
           title="Rétablir (Ctrl+Y)"
           aria-label="Rétablir"
           disabled={!canRedo}
@@ -666,32 +992,9 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
         >
           <span aria-hidden="true">↷</span>
         </button>
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          {doc.role === "owner" ? (
-            <button type="button" className="btn-ghost" onClick={() => setInvitesOpen(true)}>
-              Inviter
-            </button>
-          ) : null}
-          <button type="button" className="btn-primary" onClick={() => (playing ? setPlaying(false) : play())}>
-            {playing ? "Pause" : "Lecture"}
-          </button>
-          <button type="button" className="btn-ghost" onClick={() => setFaceView((current) => !current)}>
-            {faceView ? "Plan" : "Vue spectateur"}
-          </button>
-          <button
-            type="button"
-            className="btn-ghost"
-            onClick={() => {
-              setPlaying(false);
-              setPreview(false);
-              setBeat(0);
-            }}
-          >
-            Stop
-          </button>
-        </div>
       </div>
       {saveError ? <p className="bg-paper px-4 py-2 text-sm text-curtain">{saveError}</p> : null}
+      {musicError ? <p className="bg-paper px-4 py-2 text-sm text-curtain">{musicError}</p> : null}
       {doc.role === "viewer" ? (
         <p className="bg-paper px-4 py-2 text-sm text-muted">Lecture seule : parcours des tableaux et lecture, sans modification.</p>
       ) : null}
@@ -963,8 +1266,12 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
         </div>
         {selectedFormation ? (
           <div className="mt-3 flex flex-wrap items-end gap-3">
-            <label className="grid gap-1 text-sm">
-              Tenue (temps)
+            <label className="beat-field beat-field-short">
+              <span>
+                Positions du {selectedFormation.label}
+                <br />
+                (temps)
+              </span>
               <input
                 type="number"
                 min={1}
@@ -988,8 +1295,16 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
                 className="field w-28"
               />
             </label>
-            <label className="grid gap-1 text-sm">
-              Déplacement (temps)
+            <label className="beat-field beat-field-short">
+              <span>
+                Déplacement (temps)
+                {nextFormation ? (
+                  <>
+                    <br />
+                    vers le {nextFormation.label.toLocaleLowerCase("fr-FR")}
+                  </>
+                ) : null}
+              </span>
               <input
                 type="number"
                 min={1}
@@ -1029,21 +1344,87 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
                 </button>
               </>
             ) : null}
-            <label className="ml-auto grid min-w-48 flex-1 gap-1 text-sm">
-              Lecture
-              <input
-                type="range"
-                min={0}
-                max={timeline.totalBeats}
-                step={0.05}
-                value={Math.min(beat, timeline.totalBeats)}
-                onChange={(event) => {
-                  setPlaying(false);
-                  setPreview(true);
-                  setBeat(Number(event.target.value));
-                }}
-              />
-            </label>
+            <div className="ml-auto grid min-w-48 flex-1 gap-1">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="btn-primary"
+                  style={{ width: "2.5rem", height: "2.5rem", padding: 0 }}
+                  aria-label={playing ? "Pause" : "Lecture"}
+                  title={playing ? "Pause" : "Lecture"}
+                  onClick={() => (playing ? setPlaying(false) : play())}
+                >
+                  {playing ? <PauseIcon /> : <PlayIcon />}
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  style={{ width: "2.5rem", height: "2.5rem", padding: 0 }}
+                  aria-label="Stop"
+                  title="Stop"
+                  onClick={stopPlayback}
+                >
+                  <StopIcon />
+                </button>
+                <button type="button" className="btn-ghost" onClick={() => setFaceView((current) => !current)}>
+                  {faceView ? "Plan" : "Vue spectateur"}
+                </button>
+                <label className="flex items-center gap-2 text-sm">
+                  TPM
+                  <input
+                    type="number"
+                    min={40}
+                    max={240}
+                    step={1}
+                    disabled={!editing}
+                    value={doc.tempoTpm}
+                    onFocus={beginGesture}
+                    onBlur={commitGesture}
+                    onChange={(event) => {
+                      const tempo = Number(event.target.value);
+                      if (Number.isInteger(tempo) && tempo >= 40 && tempo <= 240) {
+                        reviseDoc((current) => ({ ...current, tempoTpm: tempo }));
+                      }
+                    }}
+                    className="field w-24"
+                  />
+                </label>
+                {doc.musicName ? (
+                  <span className="max-w-48 truncate text-sm text-muted" title={doc.musicName}>
+                    {doc.musicName}
+                  </span>
+                ) : null}
+              </div>
+              <div className="playback-line">
+                <div className="playback-scale" aria-hidden="true">
+                  {scale.ticks.map((tick) => (
+                    <div
+                      key={tick.seconds}
+                      className={`playback-tick playback-tick-${tick.weight}`}
+                      style={{
+                        left: `calc(var(--thumb) / 2 + (100% - var(--thumb)) * ${scale.durationSec > 0 ? tick.seconds / scale.durationSec : 0})`,
+                      }}
+                    >
+                      {tick.label ? <span className="playback-tick-label">{tick.label}</span> : null}
+                      <span className="playback-tick-mark" />
+                    </div>
+                  ))}
+                </div>
+                <input
+                  type="range"
+                  aria-label="Lecture"
+                  min={0}
+                  max={timeline.totalBeats}
+                  step={0.05}
+                  value={Math.min(beat, timeline.totalBeats)}
+                  onChange={(event) => {
+                    setPlaying(false);
+                    setPreview(true);
+                    setBeat(Number(event.target.value));
+                  }}
+                />
+              </div>
+            </div>
           </div>
         ) : null}
       </div>
@@ -1058,7 +1439,7 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
           >
             <div className="flex items-start justify-between gap-3">
               <h2 id="shape-dialog-title" className="font-display text-2xl">
-                Forme de la pièce
+                Forme de la scène
               </h2>
               <button type="button" className="btn-ghost" onClick={() => setShapeOpen(false)}>
                 Fermer
@@ -1082,7 +1463,7 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
               </label>
               <div className="grid grid-cols-2 gap-2">
                 <label className="grid gap-1 text-sm">
-                  {shape === "square" ? "Côté" : shape === "circle" ? "Diamètre" : "Largeur"}
+                  {shape === "square" ? "Côté" : shape === "circle" || shape === "semicircle" ? "Diamètre" : "Largeur"}
                   <input
                     type="number"
                     min={2}

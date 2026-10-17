@@ -2,7 +2,7 @@ export const WING_WIDTH = 3;
 export const MIN_STAGE = 2;
 export const MAX_STAGE = 40;
 
-export const STAGE_SHAPES = ["rectangle", "square", "oval", "circle"] as const;
+export const STAGE_SHAPES = ["rectangle", "square", "oval", "circle", "semicircle"] as const;
 export type StageShape = (typeof STAGE_SHAPES)[number];
 
 export type Stage = {
@@ -22,6 +22,9 @@ export function isStageShape(value: string): value is StageShape {
 export function resolvedStage(stage: Stage): Stage {
   if (stage.shape === "square" || stage.shape === "circle") {
     return { shape: stage.shape, width: stage.width, depth: stage.width };
+  }
+  if (stage.shape === "semicircle") {
+    return { shape: stage.shape, width: stage.width, depth: stage.width / 2 };
   }
   return { shape: stage.shape, width: stage.width, depth: stage.depth };
 }
@@ -50,6 +53,11 @@ export function isInsideStage(point: Point, stage: Stage) {
   if (hx <= 0 || hy <= 0) return false;
   if (shape === "rectangle" || shape === "square") {
     return Math.abs(point.x) <= hx + 1e-6 && Math.abs(point.y) <= hy + 1e-6;
+  }
+  if (shape === "semicircle") {
+    if (point.y > hy + 1e-6) return false;
+    const dy = point.y - hy;
+    return point.x * point.x + dy * dy <= hx * hx + 1e-6;
   }
   return (point.x * point.x) / (hx * hx) + (point.y * point.y) / (hy * hy) <= 1 + 1e-6;
 }
@@ -118,12 +126,24 @@ function closestOnEllipse(point: Point, hx: number, hy: number): Point {
   return { x: hx * Math.cos(t), y: hy * Math.sin(t) };
 }
 
+function closestOnSemicircle(point: Point, hx: number, hy: number): Point {
+  const onDiameter = { x: clamp(point.x, -hx, hx), y: hy };
+  const dx = point.x;
+  const dy = point.y - hy;
+  const len = Math.hypot(dx, dy);
+  let angle = len < 1e-9 ? -Math.PI / 2 : Math.atan2(dy, dx);
+  if (angle > 0) angle = angle <= Math.PI / 2 ? 0 : -Math.PI;
+  const onArc = { x: hx * Math.cos(angle), y: hy + hx * Math.sin(angle) };
+  return dist2(point, onArc) <= dist2(point, onDiameter) ? onArc : onDiameter;
+}
+
 export function closestOnStage(point: Point, stage: Stage): Point {
   const { shape, hx, hy } = halves(stage);
   if (shape === "rectangle" || shape === "square") {
     return { x: clamp(point.x, -hx, hx), y: clamp(point.y, -hy, hy) };
   }
   if (isInsideStage(point, stage)) return { x: point.x, y: point.y };
+  if (shape === "semicircle") return closestOnSemicircle(point, hx, hy);
   return closestOnEllipse(point, hx, hy);
 }
 
