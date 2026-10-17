@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FrontStage } from "@/components/FrontStage";
 import { StagePlan } from "@/components/StagePlan";
@@ -96,6 +96,14 @@ function StopIcon() {
   );
 }
 
+function MenuChevron() {
+  return (
+    <svg viewBox="0 0 12 12" className="menu-chevron" aria-hidden="true">
+      <path d="M2.2 4.3 6 8l3.8-3.7" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function groupDelta(origins: Point[], delta: Point, stage: Stage): Point {
   const fits = (scale: number) =>
     origins.every((origin) => {
@@ -134,7 +142,49 @@ function cloneDoc(doc: ChoreographyDocument): ChoreographyDocument {
   return structuredClone(doc);
 }
 
+type TickWeight = "minor" | "mid" | "major";
+
+function timeScale(totalBeats: number, tempoTpm: number) {
+  const durationSec = tempoTpm > 0 ? (totalBeats * 60) / tempoTpm : 0;
+  const ticks: { seconds: number; weight: TickWeight; label: string }[] = [];
+  if (durationSec > 0) {
+    const minorStep = durationSec < 60 ? 1 : 5;
+    const last = Math.floor((durationSec + 1e-6) / minorStep);
+    for (let index = 0; index <= last; index += 1) {
+      const seconds = index * minorStep;
+      const weight = tickWeight(seconds, durationSec);
+      ticks.push({ seconds, weight, label: tickLabel(seconds, weight, durationSec) });
+    }
+  }
+  return { durationSec, ticks };
+}
+
+function tickWeight(seconds: number, durationSec: number): TickWeight {
+  if (durationSec >= 60) {
+    if (seconds % 30 === 0) return "major";
+    if (seconds % 10 === 0) return "mid";
+    return "minor";
+  }
+  if (seconds % 10 === 0) return "major";
+  if (seconds % 5 === 0) return "mid";
+  return "minor";
+}
+
+function tickLabel(seconds: number, weight: TickWeight, durationSec: number) {
+  if (durationSec >= 60) return weight === "major" ? formatClock(seconds) : "";
+  if (weight === "minor" && durationSec >= 10) return "";
+  return `${Math.round(seconds)}s`;
+}
+
+function formatClock(seconds: number) {
+  const total = Math.round(seconds);
+  const mins = Math.floor(total / 60);
+  const secs = total % 60;
+  return `${mins}:${secs.toString().padStart(2, "0")}`;
+}
+
 export function Editor({ initial }: { initial: ChoreographyDocument }) {
+  const router = useRouter();
   const [doc, setDoc] = useState(initial);
   const [selectedFormationId, setSelectedFormationId] = useState(initial.formations[0]?.id ?? "");
   const [selectedDancerIds, setSelectedDancerIds] = useState<string[]>(() => (initial.dancers[0] ? [initial.dancers[0].id] : []));
@@ -155,6 +205,8 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
   const [musicVersion, setMusicVersion] = useState(0);
   const [invitesOpen, setInvitesOpen] = useState(false);
   const [shapeOpen, setShapeOpen] = useState(false);
+  const [openMenu, setOpenMenu] = useState<"projet" | "settings" | null>(null);
+  const menuBarRef = useRef<HTMLDivElement>(null);
   const [exporting, setExporting] = useState(false);
   const [status, setStatus] = useState<"saved" | "saving" | "error">("saved");
   const [saveError, setSaveError] = useState("");
@@ -176,6 +228,7 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
   const stage = stageOf(doc);
   const singleDimension = shape === "square" || shape === "circle";
   const timeline = useMemo(() => buildTimeline(doc.formations), [doc.formations]);
+  const scale = useMemo(() => timeScale(timeline.totalBeats, doc.tempoTpm), [timeline.totalBeats, doc.tempoTpm]);
   const selectedFormation =
     doc.formations.find((formation) => formation.id === selectedFormationId) ?? doc.formations[0];
   const soleDancerId = selectedDancerIds.length === 1 ? selectedDancerIds[0] : undefined;
@@ -282,6 +335,22 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
   }, [playing, beat, doc.musicName, doc.tempoTpm]);
 
   useEffect(() => {
+    if (!openMenu) return;
+    function onPointerDown(event: PointerEvent) {
+      if (!menuBarRef.current?.contains(event.target as Node)) setOpenMenu(null);
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpenMenu(null);
+    }
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [openMenu]);
+
+  useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (!canEdit) return;
       const target = event.target;
@@ -322,6 +391,35 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
     pastRef.current.push(base);
     futureRef.current = [];
     bumpHistory();
+  }
+
+  async function leaveAndSave() {
+    const body = JSON.stringify(payloadOf(docRef.current));
+    if (!canEdit || body === saved.current) {
+      router.push("/choregraphies");
+      return;
+    }
+    const requestId = saveRequest.current + 1;
+    saveRequest.current = requestId;
+    setStatus("saving");
+    const response = await fetch(`/api/choregraphies/${doc.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body,
+    });
+    const data = (await response.json().catch(() => null)) as { error?: string } | null;
+    if (!response.ok) {
+      if (requestId !== saveRequest.current) return;
+      setStatus("error");
+      setSaveError(data?.error ?? "Enregistrement impossible.");
+      return;
+    }
+    if (requestId === saveRequest.current) {
+      saved.current = body;
+      setStatus("saved");
+      setSaveError("");
+    }
+    router.push("/choregraphies");
   }
 
   function reviseDoc(recipe: (current: ChoreographyDocument) => ChoreographyDocument) {
@@ -735,6 +833,9 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
   );
   const sharedCurve = targetCurves.length > 0 && targetCurves.every((value) => value === targetCurves[0]) ? targetCurves[0] : null;
   const shownCurve = sharedCurve ?? targetCurves[0] ?? 0;
+  const orderedFormations = doc.formations.slice().sort((a, b) => a.order - b.order);
+  const selectedFormationIndex = orderedFormations.findIndex((formation) => formation.id === selectedFormation?.id);
+  const nextFormation = selectedFormationIndex >= 0 ? orderedFormations[selectedFormationIndex + 1] : undefined;
 
   return (
     <div className="flex h-[calc(100dvh-4rem)] w-full min-w-0 flex-col">
@@ -746,10 +847,113 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
           src={`/api/choregraphies/${doc.id}/musique?v=${musicVersion}`}
         />
       ) : null}
-      <div className="flex flex-wrap items-center gap-3 border-b border-line bg-paper-2 px-4 py-3">
-        <Link href="/choregraphies" className="text-sm text-muted hover:text-ink">
-          Retour
-        </Link>
+      <div ref={menuBarRef} className="flex flex-wrap items-center gap-3 border-b border-line bg-paper-2 px-4 py-3">
+        <div className="menu">
+          <button
+            type="button"
+            className="menu-trigger"
+            aria-expanded={openMenu === "projet"}
+            aria-haspopup="menu"
+            onClick={() => setOpenMenu((current) => (current === "projet" ? null : "projet"))}
+          >
+            Projet
+            <MenuChevron />
+          </button>
+          {openMenu === "projet" ? (
+            <div role="menu" className="menu-panel">
+              <button
+                type="button"
+                role="menuitem"
+                className="menu-item"
+                disabled={doc.role !== "owner"}
+                onClick={() => {
+                  setOpenMenu(null);
+                  setInvitesOpen(true);
+                }}
+              >
+                Inviter un créateur
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="menu-item"
+                disabled={exporting}
+                onClick={() => {
+                  setOpenMenu(null);
+                  void exportPdf();
+                }}
+              >
+                {exporting ? "Création du PDF…" : "Exporter en PDF"}
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="menu-item"
+                onClick={() => {
+                  setOpenMenu(null);
+                  void leaveAndSave();
+                }}
+              >
+                Quitter et enregistrer
+              </button>
+            </div>
+          ) : null}
+        </div>
+        <div className="menu">
+          <button
+            type="button"
+            className="menu-trigger"
+            aria-expanded={openMenu === "settings"}
+            aria-haspopup="menu"
+            onClick={() => setOpenMenu((current) => (current === "settings" ? null : "settings"))}
+          >
+            Paramètres de chorégraphie
+            <MenuChevron />
+          </button>
+          {openMenu === "settings" ? (
+            <div role="menu" className="menu-panel">
+              <button
+                type="button"
+                role="menuitem"
+                className="menu-item"
+                onClick={() => {
+                  setOpenMenu(null);
+                  setShapeOpen(true);
+                }}
+              >
+                Forme de la pièce
+              </button>
+              <label className={`menu-item ${!canEdit || musicBusy ? "pointer-events-none opacity-45" : "cursor-pointer"}`}>
+                Choisir une musique
+                <input
+                  type="file"
+                  accept=".mp3,.wav,.ogg,.m4a,audio/mpeg,audio/wav,audio/ogg,audio/mp4"
+                  className="sr-only"
+                  disabled={!canEdit || musicBusy}
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    event.target.value = "";
+                    setOpenMenu(null);
+                    if (file) void chooseMusic(file);
+                  }}
+                />
+              </label>
+              <button
+                type="button"
+                role="menuitem"
+                className="menu-item"
+                title={doc.musicName ?? "Aucune musique"}
+                disabled={!doc.musicName || !canEdit || musicBusy}
+                onClick={() => {
+                  setOpenMenu(null);
+                  void removeMusic();
+                }}
+              >
+                Retirer la musique
+              </button>
+            </div>
+          ) : null}
+        </div>
         <input
           value={doc.title}
           disabled={!editing}
@@ -762,38 +966,11 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
           className="field max-w-xs font-display text-xl"
           aria-label="Titre"
         />
-        <label className="flex items-center gap-2 text-sm">
-          TPM
-          <input
-            type="number"
-            min={40}
-            max={240}
-            step={1}
-            disabled={!editing}
-            value={doc.tempoTpm}
-            onFocus={beginGesture}
-            onBlur={commitGesture}
-            onChange={(event) => {
-              const tempo = Number(event.target.value);
-              if (Number.isInteger(tempo) && tempo >= 40 && tempo <= 240) {
-                reviseDoc((current) => ({ ...current, tempoTpm: tempo }));
-              }
-            }}
-            className="field w-24"
-          />
-        </label>
-        <button type="button" className="btn-ghost" onClick={() => setShapeOpen(true)}>
-          forme de la pièce
-        </button>
-        <button type="button" className="btn-ghost" disabled={exporting} onClick={() => void exportPdf()}>
-          {exporting ? "Création du PDF…" : "Exporter le PDF"}
-        </button>
         <span className="text-xs text-muted">{ROLE_LABELS[doc.role]}</span>
         <span className={`text-xs ${status === "error" ? "text-curtain" : "text-muted"}`}>{canEdit ? statusLabel : "Lecture seule"}</span>
         <button
           type="button"
-          className="btn-ghost h-10 w-10 shrink-0 px-0 leading-none"
-          style={{ color: "#000", opacity: 1, fontSize: "1.5rem", lineHeight: 1 }}
+          className="btn-ghost history-btn h-10 w-10 shrink-0 px-0"
           title="Annuler (Ctrl+Z)"
           aria-label="Annuler"
           disabled={!canUndo}
@@ -803,8 +980,7 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
         </button>
         <button
           type="button"
-          className="btn-ghost h-10 w-10 shrink-0 px-0 leading-none"
-          style={{ color: "#000", opacity: 1, fontSize: "1.5rem", lineHeight: 1 }}
+          className="btn-ghost history-btn h-10 w-10 shrink-0 px-0"
           title="Rétablir (Ctrl+Y)"
           aria-label="Rétablir"
           disabled={!canRedo}
@@ -812,42 +988,6 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
         >
           <span aria-hidden="true">↷</span>
         </button>
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          <span className="max-w-48 truncate text-sm text-muted" title={doc.musicName ?? undefined}>
-            {doc.musicName ?? "Aucune musique"}
-          </span>
-          {canEdit ? (
-            <>
-              <label className={`btn-ghost cursor-pointer ${musicBusy ? "pointer-events-none opacity-50" : ""}`}>
-                Choisir une musique
-                <input
-                  type="file"
-                  accept=".mp3,.wav,.ogg,.m4a,audio/mpeg,audio/wav,audio/ogg,audio/mp4"
-                  className="sr-only"
-                  disabled={musicBusy}
-                  onChange={(event) => {
-                    const file = event.target.files?.[0];
-                    event.target.value = "";
-                    if (file) void chooseMusic(file);
-                  }}
-                />
-              </label>
-              {doc.musicName ? (
-                <button type="button" className="btn-ghost" disabled={musicBusy} onClick={() => void removeMusic()}>
-                  Retirer
-                </button>
-              ) : null}
-            </>
-          ) : null}
-          {doc.role === "owner" ? (
-            <button type="button" className="btn-ghost" onClick={() => setInvitesOpen(true)}>
-              Inviter
-            </button>
-          ) : null}
-          <button type="button" className="btn-ghost" onClick={() => setFaceView((current) => !current)}>
-            {faceView ? "Plan" : "Vue spectateur"}
-          </button>
-        </div>
       </div>
       {saveError ? <p className="bg-paper px-4 py-2 text-sm text-curtain">{saveError}</p> : null}
       {musicError ? <p className="bg-paper px-4 py-2 text-sm text-curtain">{musicError}</p> : null}
@@ -1122,8 +1262,12 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
         </div>
         {selectedFormation ? (
           <div className="mt-3 flex flex-wrap items-end gap-3">
-            <label className="grid gap-1 text-sm">
-              Tenue (temps)
+            <label className="beat-field beat-field-short">
+              <span>
+                Positions du {selectedFormation.label}
+                <br />
+                (temps)
+              </span>
               <input
                 type="number"
                 min={1}
@@ -1147,8 +1291,16 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
                 className="field w-28"
               />
             </label>
-            <label className="grid gap-1 text-sm">
-              Déplacement (temps)
+            <label className="beat-field beat-field-short">
+              <span>
+                Déplacement (temps)
+                {nextFormation ? (
+                  <>
+                    <br />
+                    vers le {nextFormation.label.toLocaleLowerCase("fr-FR")}
+                  </>
+                ) : null}
+              </span>
               <input
                 type="number"
                 min={1}
@@ -1210,20 +1362,64 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
                 >
                   <StopIcon />
                 </button>
+                <button type="button" className="btn-ghost" onClick={() => setFaceView((current) => !current)}>
+                  {faceView ? "Plan" : "Vue spectateur"}
+                </button>
+                <label className="flex items-center gap-2 text-sm">
+                  TPM
+                  <input
+                    type="number"
+                    min={40}
+                    max={240}
+                    step={1}
+                    disabled={!editing}
+                    value={doc.tempoTpm}
+                    onFocus={beginGesture}
+                    onBlur={commitGesture}
+                    onChange={(event) => {
+                      const tempo = Number(event.target.value);
+                      if (Number.isInteger(tempo) && tempo >= 40 && tempo <= 240) {
+                        reviseDoc((current) => ({ ...current, tempoTpm: tempo }));
+                      }
+                    }}
+                    className="field w-24"
+                  />
+                </label>
+                {doc.musicName ? (
+                  <span className="max-w-48 truncate text-sm text-muted" title={doc.musicName}>
+                    {doc.musicName}
+                  </span>
+                ) : null}
               </div>
-              <input
-                type="range"
-                aria-label="Lecture"
-                min={0}
-                max={timeline.totalBeats}
-                step={0.05}
-                value={Math.min(beat, timeline.totalBeats)}
-                onChange={(event) => {
-                  setPlaying(false);
-                  setPreview(true);
-                  setBeat(Number(event.target.value));
-                }}
-              />
+              <div className="playback-line">
+                <div className="playback-scale" aria-hidden="true">
+                  {scale.ticks.map((tick) => (
+                    <div
+                      key={tick.seconds}
+                      className={`playback-tick playback-tick-${tick.weight}`}
+                      style={{
+                        left: `calc(var(--thumb) / 2 + (100% - var(--thumb)) * ${scale.durationSec > 0 ? tick.seconds / scale.durationSec : 0})`,
+                      }}
+                    >
+                      {tick.label ? <span className="playback-tick-label">{tick.label}</span> : null}
+                      <span className="playback-tick-mark" />
+                    </div>
+                  ))}
+                </div>
+                <input
+                  type="range"
+                  aria-label="Lecture"
+                  min={0}
+                  max={timeline.totalBeats}
+                  step={0.05}
+                  value={Math.min(beat, timeline.totalBeats)}
+                  onChange={(event) => {
+                    setPlaying(false);
+                    setPreview(true);
+                    setBeat(Number(event.target.value));
+                  }}
+                />
+              </div>
             </div>
           </div>
         ) : null}
