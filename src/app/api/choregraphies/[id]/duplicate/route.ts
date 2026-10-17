@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { loadChoreography, requireApiSession } from "@/lib/access";
+import { copyMusic } from "@/lib/music";
 import { prisma } from "@/lib/prisma";
 
 type RouteContext = { params: Promise<{ id: string }> };
@@ -67,6 +68,16 @@ export async function POST(_request: Request, context: RouteContext) {
     }
     return choreography;
   });
+
+  if (source.musicFile && source.musicName) {
+    const musicFile = await copyMusic(source.musicFile, created.id);
+    if (musicFile) {
+      await prisma.choreography.update({
+        where: { id: created.id },
+        data: { musicFile, musicName: source.musicName },
+      });
+    }
+  }
 
   return NextResponse.json({ id: created.id });
 }

@@ -37,6 +37,9 @@ yarn-error.log*
 /prisma/*.db
 /prisma/*.db-journal
 
+# musiques locales des chorégraphies
+/musiques
+
 # vercel
 .vercel
 

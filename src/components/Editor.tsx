@@ -72,6 +72,30 @@ function TrashIcon() {
   );
 }
 
+function PlayIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-4 w-4" aria-hidden="true">
+      <path d="M8 5.5v13l11-6.5Z" fill="currentColor" />
+    </svg>
+  );
+}
+
+function PauseIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-4 w-4" aria-hidden="true">
+      <path d="M6 5h4.2v14H6zm7.8 0H18v14h-4.2Z" fill="currentColor" />
+    </svg>
+  );
+}
+
+function StopIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-4 w-4" aria-hidden="true">
+      <rect x="6" y="6" width="12" height="12" fill="currentColor" />
+    </svg>
+  );
+}
+
 function groupDelta(origins: Point[], delta: Point, stage: Stage): Point {
   const fits = (scale: number) =>
     origins.every((origin) => {
@@ -123,6 +147,12 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
   const [faceView, setFaceView] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [beat, setBeat] = useState(0);
+  const beatRef = useRef(0);
+  beatRef.current = beat;
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const [musicError, setMusicError] = useState("");
+  const [musicBusy, setMusicBusy] = useState(false);
+  const [musicVersion, setMusicVersion] = useState(0);
   const [invitesOpen, setInvitesOpen] = useState(false);
   const [shapeOpen, setShapeOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -187,30 +217,69 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
   }, [serialized, canEdit, doc.id]);
 
   useEffect(() => {
-    if (!playing) return;
+    if (!playing) {
+      audioRef.current?.pause();
+      return;
+    }
     let frame = 0;
     let last = performance.now();
     const loop = (now: number) => {
-      const dt = (now - last) / 1000;
-      last = now;
-      let reachedEnd = false;
-      setBeat((current) => {
-        const next = current + dt * (doc.tempoTpm / 60);
+      const currentAudio = audioRef.current;
+      const duration = currentAudio && Number.isFinite(currentAudio.duration) ? currentAudio.duration : null;
+      const musicDrives = Boolean(
+        doc.musicName &&
+          currentAudio &&
+          currentAudio.readyState >= 2 &&
+          !currentAudio.ended &&
+          !currentAudio.paused &&
+          (duration === null || currentAudio.currentTime < duration - 0.05),
+      );
+      if (musicDrives && currentAudio) {
+        const next = currentAudio.currentTime * (doc.tempoTpm / 60);
+        last = now;
         if (next >= timeline.totalBeats) {
-          reachedEnd = true;
-          return timeline.totalBeats;
+          setBeat(timeline.totalBeats);
+          setPlaying(false);
+          return;
         }
-        return next;
-      });
-      if (reachedEnd) {
-        setPlaying(false);
-        return;
+        setBeat(next);
+      } else {
+        const dt = (now - last) / 1000;
+        last = now;
+        let reachedEnd = false;
+        setBeat((current) => {
+          const next = current + dt * (doc.tempoTpm / 60);
+          if (next >= timeline.totalBeats) {
+            reachedEnd = true;
+            return timeline.totalBeats;
+          }
+          return next;
+        });
+        if (reachedEnd) {
+          setPlaying(false);
+          return;
+        }
       }
       frame = window.requestAnimationFrame(loop);
     };
     frame = window.requestAnimationFrame(loop);
     return () => window.cancelAnimationFrame(frame);
-  }, [playing, doc.tempoTpm, timeline.totalBeats]);
+  }, [playing, doc.tempoTpm, doc.musicName, timeline.totalBeats]);
+
+  useEffect(() => {
+    if (playing) return;
+    const audio = audioRef.current;
+    if (!audio || !doc.musicName) return;
+    const target = Math.max(0, beat * (60 / doc.tempoTpm));
+    const duration = Number.isFinite(audio.duration) ? audio.duration : target;
+    const nextTime = Math.min(target, duration);
+    if (Math.abs(audio.currentTime - nextTime) <= 0.05) return;
+    try {
+      audio.currentTime = nextTime;
+    } catch {
+      // Le navigateur refuse le déplacement tant que le fichier n'est pas prêt.
+    }
+  }, [playing, beat, doc.musicName, doc.tempoTpm]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -277,8 +346,9 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
   }
 
   function showDocument(next: ChoreographyDocument) {
-    docRef.current = next;
-    setDoc(next);
+    const merged = { ...next, musicName: docRef.current.musicName };
+    docRef.current = merged;
+    setDoc(merged);
     setShape(next.stageShape);
     setWidth(next.stageWidth);
     setDepth(next.stageDepth);
@@ -480,8 +550,76 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
 
   function play() {
     setPreview(true);
-    if (beat >= timeline.totalBeats) setBeat(0);
+    const atEnd = beatRef.current >= timeline.totalBeats - 0.001;
+    const start = atEnd ? 0 : beatRef.current;
+    if (atEnd) setBeat(start);
+    const audio = audioRef.current;
+    if (audio && doc.musicName) {
+      const target = Math.max(0, start * (60 / doc.tempoTpm));
+      const duration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : null;
+      const nextTime = duration === null ? target : Math.min(target, Math.max(0, duration - 0.05));
+      try {
+        if (Math.abs(audio.currentTime - nextTime) > 0.05) audio.currentTime = nextTime;
+      } catch {
+        // Le navigateur refuse le déplacement tant que le fichier n'est pas prêt.
+      }
+      void audio.play().catch(() => {
+        setMusicError("La musique n'a pas pu être lue.");
+      });
+    }
     setPlaying(true);
+  }
+
+  function stopPlayback() {
+    setPlaying(false);
+    setPreview(false);
+    setBeat(0);
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.pause();
+    try {
+      audio.currentTime = 0;
+    } catch {
+      // Le fichier n'est pas encore chargé.
+    }
+  }
+
+  function rememberMusic(musicName: string | null) {
+    const next = { ...docRef.current, musicName };
+    docRef.current = next;
+    setDoc(next);
+  }
+
+  async function chooseMusic(file: File) {
+    if (!canEdit) return;
+    setMusicBusy(true);
+    setMusicError("");
+    const body = new FormData();
+    body.set("file", file);
+    const response = await fetch(`/api/choregraphies/${doc.id}/musique`, { method: "POST", body });
+    const data = (await response.json().catch(() => null)) as { error?: string; musicName?: string } | null;
+    setMusicBusy(false);
+    if (!response.ok || !data?.musicName) {
+      setMusicError(data?.error ?? "Envoi impossible.");
+      return;
+    }
+    rememberMusic(data.musicName);
+    setMusicVersion((version) => version + 1);
+  }
+
+  async function removeMusic() {
+    if (!canEdit || !doc.musicName) return;
+    setMusicBusy(true);
+    setMusicError("");
+    stopPlayback();
+    const response = await fetch(`/api/choregraphies/${doc.id}/musique`, { method: "DELETE" });
+    const data = (await response.json().catch(() => null)) as { error?: string } | null;
+    setMusicBusy(false);
+    if (!response.ok) {
+      setMusicError(data?.error ?? "Retrait impossible.");
+      return;
+    }
+    rememberMusic(null);
   }
 
   function replaceSelection(next: string[]) {
@@ -600,6 +738,14 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
 
   return (
     <div className="flex h-[calc(100dvh-4rem)] w-full min-w-0 flex-col">
+      {doc.musicName ? (
+        <audio
+          key={`${doc.musicName}-${musicVersion}`}
+          ref={audioRef}
+          preload="auto"
+          src={`/api/choregraphies/${doc.id}/musique?v=${musicVersion}`}
+        />
+      ) : null}
       <div className="flex flex-wrap items-center gap-3 border-b border-line bg-paper-2 px-4 py-3">
         <Link href="/choregraphies" className="text-sm text-muted hover:text-ink">
           Retour
@@ -667,31 +813,44 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
           <span aria-hidden="true">↷</span>
         </button>
         <div className="ml-auto flex flex-wrap items-center gap-2">
+          <span className="max-w-48 truncate text-sm text-muted" title={doc.musicName ?? undefined}>
+            {doc.musicName ?? "Aucune musique"}
+          </span>
+          {canEdit ? (
+            <>
+              <label className={`btn-ghost cursor-pointer ${musicBusy ? "pointer-events-none opacity-50" : ""}`}>
+                Choisir une musique
+                <input
+                  type="file"
+                  accept=".mp3,.wav,.ogg,.m4a,audio/mpeg,audio/wav,audio/ogg,audio/mp4"
+                  className="sr-only"
+                  disabled={musicBusy}
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    event.target.value = "";
+                    if (file) void chooseMusic(file);
+                  }}
+                />
+              </label>
+              {doc.musicName ? (
+                <button type="button" className="btn-ghost" disabled={musicBusy} onClick={() => void removeMusic()}>
+                  Retirer
+                </button>
+              ) : null}
+            </>
+          ) : null}
           {doc.role === "owner" ? (
             <button type="button" className="btn-ghost" onClick={() => setInvitesOpen(true)}>
               Inviter
             </button>
           ) : null}
-          <button type="button" className="btn-primary" onClick={() => (playing ? setPlaying(false) : play())}>
-            {playing ? "Pause" : "Lecture"}
-          </button>
           <button type="button" className="btn-ghost" onClick={() => setFaceView((current) => !current)}>
             {faceView ? "Plan" : "Vue spectateur"}
-          </button>
-          <button
-            type="button"
-            className="btn-ghost"
-            onClick={() => {
-              setPlaying(false);
-              setPreview(false);
-              setBeat(0);
-            }}
-          >
-            Stop
           </button>
         </div>
       </div>
       {saveError ? <p className="bg-paper px-4 py-2 text-sm text-curtain">{saveError}</p> : null}
+      {musicError ? <p className="bg-paper px-4 py-2 text-sm text-curtain">{musicError}</p> : null}
       {doc.role === "viewer" ? (
         <p className="bg-paper px-4 py-2 text-sm text-muted">Lecture seule : parcours des tableaux et lecture, sans modification.</p>
       ) : null}
@@ -1029,10 +1188,32 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
                 </button>
               </>
             ) : null}
-            <label className="ml-auto grid min-w-48 flex-1 gap-1 text-sm">
-              Lecture
+            <div className="ml-auto grid min-w-48 flex-1 gap-1">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="btn-primary"
+                  style={{ width: "2.5rem", height: "2.5rem", padding: 0 }}
+                  aria-label={playing ? "Pause" : "Lecture"}
+                  title={playing ? "Pause" : "Lecture"}
+                  onClick={() => (playing ? setPlaying(false) : play())}
+                >
+                  {playing ? <PauseIcon /> : <PlayIcon />}
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  style={{ width: "2.5rem", height: "2.5rem", padding: 0 }}
+                  aria-label="Stop"
+                  title="Stop"
+                  onClick={stopPlayback}
+                >
+                  <StopIcon />
+                </button>
+              </div>
               <input
                 type="range"
+                aria-label="Lecture"
                 min={0}
                 max={timeline.totalBeats}
                 step={0.05}
@@ -1043,7 +1224,7 @@ export function Editor({ initial }: { initial: ChoreographyDocument }) {
                   setBeat(Number(event.target.value));
                 }}
               />
-            </label>
+            </div>
           </div>
         ) : null}
       </div>

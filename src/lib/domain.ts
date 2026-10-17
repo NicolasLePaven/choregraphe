@@ -35,6 +35,7 @@ export type ChoreographyDocument = {
   stageWidth: number;
   stageDepth: number;
   tempoTpm: number;
+  musicName: string | null;
   role: Role;
   dancers: Dancer[];
   formations: Formation[];

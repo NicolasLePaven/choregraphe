@@ -33,6 +33,7 @@ export function toDocument(
     stageWidth: choreography.stageWidth,
     stageDepth: choreography.stageDepth,
     tempoTpm: choreography.tempoTpm,
+    musicName: choreography.musicName,
     role,
     updatedAt: choreography.updatedAt.toISOString(),
     dancers: choreography.dancers
